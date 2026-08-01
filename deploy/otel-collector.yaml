@@ -1,0 +1,46 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # The app pushes metrics here; Prometheus scrapes this endpoint. The collector
+  # is what bridges push to pull, so the app never opens a scrape port of its
+  # own.
+  #
+  # resource_to_telemetry_conversion stays off: with it on, every resource
+  # attribute (service.version, vcs.ref.head.revision, ...) is copied onto every
+  # single series instead of living once in target_info. That is a label per
+  # deploy on every metric — the cardinality goes up with each release and never
+  # comes back down.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
