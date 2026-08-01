@@ -7,6 +7,7 @@ working in this repository.
 
 ```bash
 cp .env.example .env        # required first: defaults are production-safe, so no .env means no boot-time migrations
+psql -U postgres -h localhost -f ../scripts/init-db.sql   # once per machine: creates the identity/expense databases and roles
 docker compose up -d        # postgres(5433) redis(6380) jaeger prometheus otel-collector
 go run ./cmd/api            # run the API (applies goose migrations on boot when .env sets POSTGRES_MIGRATE=true)
 make test                   # unit tests with -race
@@ -21,7 +22,11 @@ make vuln                   # govulncheck at the pinned version
 Run a single test: `go test -run TestName ./internal/service/user/`.
 Integration tests live behind the `integration` build tag so plain `go test ./...` stays Docker-free.
 
-Host ports are 5433 (Postgres) and 6380 (Redis) because native installs occupy 5432/6379 on this machine — never change these mappings.
+`docker-compose.yml` describes what a server runs, and maps Postgres to host 5433 and Redis to 6380 so a containerised pair never collides with a native one — never change those mappings.
+
+**On this development machine, Postgres and Redis are the native installs on the stock 5432/6379, and the compose pair is left down** to save memory. `.env` is what selects between them, so only `.env` changes — never the compose file. Bringing the containers up as well is harmless; they simply go unused.
+
+One Postgres instance, two logical databases: `identity` and `expense`, each with its own role. That is what makes the service boundary real — cross-database joins are impossible in Postgres, so `expense` cannot reach an `identity` table even by accident. The setup script lives one level up, outside this repository, because it creates both databases and so belongs to neither service. It also revokes `CONNECT` from `PUBLIC` on both, without which either role could still open a session against the other's database (Postgres grants CONNECT to PUBLIC by default).
 
 On this Windows machine `-race` fails (`cc1.exe: 64-bit mode not compiled in` — 32-bit gcc); run tests without `-race` locally and let CI cover the race detector. The same 32-bit gcc breaks `sqlc` unless CGO is off — the Makefile already sets `CGO_ENABLED=0` for it.
 
