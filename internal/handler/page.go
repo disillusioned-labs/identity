@@ -27,7 +27,7 @@ type Page struct {
 func (p Page) Meta() Meta { return Meta(p) }
 
 // DecodePage reads ?limit and ?offset. An absent parameter takes its default;
-// a malformed or out-of-range one is rejected with 422 and returns ok=false —
+// a malformed or out-of-range one is rejected with 422 and returns ok=false -
 // the caller should just return.
 //
 // Rejecting beats clamping: silently turning ?limit=abc into 20 hands the
