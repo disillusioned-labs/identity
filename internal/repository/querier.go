@@ -6,17 +6,18 @@ package repository
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 type Querier interface {
-	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
-	// DeleteUser reports rows affected (:execrows, not :exec) so the service can
-	// tell "deleted" from "never existed" and return 404 instead of a silent 204.
-	DeleteUser(ctx context.Context, id int64) (int64, error)
-	GetUser(ctx context.Context, id int64) (User, error)
-	GetUserForUpdate(ctx context.Context, id int64) (User, error)
-	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
-	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
+	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	DeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
+	GetUser(ctx context.Context, id uuid.UUID) (GetUserRow, error)
+	GetUserByEmail(ctx context.Context, lower string) (GetUserByEmailRow, error)
+	GetUserForUpdate(ctx context.Context, id uuid.UUID) (GetUserForUpdateRow, error)
+	ListUsers(ctx context.Context, arg ListUsersParams) ([]ListUsersRow, error)
+	UpdateUser(ctx context.Context, arg UpdateUserParams) (UpdateUserRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

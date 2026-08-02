@@ -4,32 +4,34 @@ import (
 	"time"
 
 	"github.com/disillusioned-labs/identity/internal/repository"
+
+	"github.com/google/uuid"
 )
 
-// User is the domain model. Handlers and cache entries see this type, not
-// repository.User, so schema changes stop at the service boundary.
 type User struct {
-	ID        int64
+	ID        uuid.UUID
 	Name      string
 	Email     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-func toUser(u repository.User) User {
-	return User{
-		ID:        u.ID,
-		Name:      u.Name,
-		Email:     u.Email,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
-	}
+func fromCreate(r repository.CreateUserRow) User {
+	return User{ID: r.ID, Name: r.Name, Email: r.Email, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 }
 
-func toUsers(users []repository.User) []User {
-	out := make([]User, 0, len(users))
-	for _, u := range users {
-		out = append(out, toUser(u))
+func fromGet(r repository.GetUserRow) User {
+	return User{ID: r.ID, Name: r.Name, Email: r.Email, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+}
+
+func fromUpdate(r repository.UpdateUserRow) User {
+	return User{ID: r.ID, Name: r.Name, Email: r.Email, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+}
+
+func toUsers(rows []repository.ListUsersRow) []User {
+	out := make([]User, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, User{ID: r.ID, Name: r.Name, Email: r.Email, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})
 	}
 	return out
 }

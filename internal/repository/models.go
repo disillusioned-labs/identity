@@ -5,13 +5,73 @@
 package repository
 
 import (
+	"net/netip"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Organization struct {
+	ID        uuid.UUID          `json:"id"`
+	Name      string             `json:"name"`
+	Type      string             `json:"type"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+}
+
+type OrganizationInvitation struct {
+	ID             uuid.UUID          `json:"id"`
+	OrganizationID uuid.UUID          `json:"organization_id"`
+	Email          string             `json:"email"`
+	Role           string             `json:"role"`
+	TokenHash      string             `json:"token_hash"`
+	InvitedBy      uuid.UUID          `json:"invited_by"`
+	Status         string             `json:"status"`
+	ExpiresAt      time.Time          `json:"expires_at"`
+	AcceptedAt     pgtype.Timestamptz `json:"accepted_at"`
+	AcceptedBy     *uuid.UUID         `json:"accepted_by"`
+	CreatedAt      time.Time          `json:"created_at"`
+}
+
+type OrganizationMember struct {
+	OrganizationID uuid.UUID          `json:"organization_id"`
+	UserID         uuid.UUID          `json:"user_id"`
+	Role           string             `json:"role"`
+	JoinedAt       time.Time          `json:"joined_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+	DeletedAt      pgtype.Timestamptz `json:"deleted_at"`
+}
+
+type RefreshToken struct {
+	ID         uuid.UUID          `json:"id"`
+	UserID     uuid.UUID          `json:"user_id"`
+	TokenHash  string             `json:"token_hash"`
+	UserAgent  pgtype.Text        `json:"user_agent"`
+	IpAddress  *netip.Addr        `json:"ip_address"`
+	ExpiresAt  time.Time          `json:"expires_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	CreatedAt  time.Time          `json:"created_at"`
+}
+
+type SigningKey struct {
+	Kid                 string             `json:"kid"`
+	PrivateKeyEncrypted []byte             `json:"private_key_encrypted"`
+	PublicKey           string             `json:"public_key"`
+	Algorithm           string             `json:"algorithm"`
+	IsActive            bool               `json:"is_active"`
+	CreatedAt           time.Time          `json:"created_at"`
+	RetiredAt           pgtype.Timestamptz `json:"retired_at"`
+}
+
 type User struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        uuid.UUID          `json:"id"`
+	Email     string             `json:"email"`
+	Password  string             `json:"password"`
+	Name      string             `json:"name"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
 }

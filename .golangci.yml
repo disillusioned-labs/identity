@@ -47,6 +47,13 @@ linters:
     generated: lax
     paths:
       - internal/repository # sqlc-generated
+    rules:
+      # Doc comments on exported symbols are not required here: nothing outside
+      # this module imports internal/, so the godoc they would produce has no
+      # audience. Comments that carry a reason are still expected -- see the
+      # convention in AGENTS.md.
+      - linters: [revive]
+        text: "^(exported|package-comments):"
 
 formatters:
   enable:
