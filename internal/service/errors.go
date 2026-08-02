@@ -21,7 +21,7 @@ import (
 // because the handler layer is shared by every resource: a per-resource switch
 // would make each new vertical edit a common file. Code strings are duplicated
 // from handler's generic codes instead of imported because handler imports
-// service — importing back would be a cycle.
+// service - importing back would be a cycle.
 type Error struct {
 	// Code is the stable, machine-readable identifier clients branch on.
 	Code string
@@ -44,17 +44,19 @@ func NewError(code string, status int, message string) *Error {
 // Domain errors shared across resources. Resource-specific ones belong in the
 // resource's own service package.
 var (
-	// ErrNotFound means the requested resource does not exist (HTTP 404).
-	ErrNotFound = NewError("NOT_FOUND", http.StatusNotFound, "resource not found")
-	// ErrEmailTaken means a unique-email constraint was violated (HTTP 409).
+	ErrNotFound   = NewError("NOT_FOUND", http.StatusNotFound, "resource not found")
 	ErrEmailTaken = NewError("EMAIL_TAKEN", http.StatusConflict, "email already taken")
+	ErrInternal   = NewError("INTERNAL", http.StatusInternalServerError, "internal server error")
 )
 
 const pgUniqueViolation = "23505"
 
-// IsUniqueViolation reports whether err is a Postgres unique-constraint
-// violation (duplicate key).
 func IsUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
+}
+
+func IsError(err error) bool {
+	var svcErr *Error
+	return errors.As(err, &svcErr)
 }
