@@ -30,7 +30,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=build /out/api ./api
 # No config file is copied. The app is configured entirely through environment
-# variables, on top of internal/config's defaults — which are the production-safe
+# variables, on top of internal/config's defaults - which are the production-safe
 # set (JSON logs at info, no boot-time migrations, pprof off). .env.example
 # documents every available key; it is a development convenience, never shipped.
 EXPOSE 8080

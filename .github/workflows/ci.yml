@@ -102,7 +102,7 @@ jobs:
             --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -t identity:ci .
       # Proves the entrypoint is runnable and that config validation passes on
-      # the built-in defaults — a bad COPY or a stray dependency on
+      # the built-in defaults - a bad COPY or a stray dependency on
       # the build stage would otherwise only surface on first deploy.
       - name: Smoke test the image
         run: |

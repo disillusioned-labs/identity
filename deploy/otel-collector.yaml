@@ -27,7 +27,7 @@ exporters:
   # resource_to_telemetry_conversion stays off: with it on, every resource
   # attribute (service.version, vcs.ref.head.revision, ...) is copied onto every
   # single series instead of living once in target_info. That is a label per
-  # deploy on every metric — the cardinality goes up with each release and never
+  # deploy on every metric - the cardinality goes up with each release and never
   # comes back down.
   prometheus:
     endpoint: 0.0.0.0:8889

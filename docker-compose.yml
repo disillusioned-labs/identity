@@ -46,7 +46,7 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686" # UI: http://localhost:16686
-      # 4317 not exposed to host — collector talks to jaeger internally
+      # 4317 not exposed to host - collector talks to jaeger internally
 
   prometheus:
     image: prom/prometheus:v2.53.0

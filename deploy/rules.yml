@@ -3,7 +3,7 @@
 # The app exposes no /metrics: it pushes to the collector, and Prometheus
 # scrapes the collector. Series names below are the OTLP instrument names after
 # the collector's Prometheus translation (dots to underscores, unit suffix,
-# _total on monotonic counters) — the instrument names were verified against a
+# _total on monotonic counters) - the instrument names were verified against a
 # live export, the translation follows the OTLP-to-Prometheus spec.
 #
 # Two labels are load-bearing and come from the app's resource attributes, not
@@ -46,13 +46,13 @@ groups:
     rules:
       # Push has no `up`: nothing polls the app, so no scrape can fail. The
       # closest signal is the disappearance of a series that always exists
-      # while the process runs — goroutine count is reported every export
+      # while the process runs - goroutine count is reported every export
       # interval regardless of traffic.
       #
       # This is strictly weaker than a scrape failure and the alert says so:
       # a dead app, a dead collector, and a broken network between them all
       # look identical here. CollectorDown below is what tells them apart, and
-      # in Kubernetes the liveness probe — not this rule — is what restarts a
+      # in Kubernetes the liveness probe - not this rule - is what restarts a
       # wedged process.
       #
       # The window must outlast OTEL_METRIC_EXPORT_INTERVAL by a comfortable
@@ -64,7 +64,7 @@ groups:
           severity: page
         annotations:
           summary: "No metrics from identity for 3 minutes"
-          description: "The app, the collector, or the path between them is broken. Check CollectorDown first — if it is also firing, this is the collector, not the app."
+          description: "The app, the collector, or the path between them is broken. Check CollectorDown first - if it is also firing, this is the collector, not the app."
 
       # The collector is the only real scrape target left, so this is the one
       # alert that still rests on `up`. It fires for a pipeline outage, during
@@ -96,7 +96,7 @@ groups:
           severity: warn
         annotations:
           summary: "p99 latency is {{ $value | humanizeDuration }}"
-          description: "Check pool utilization first — an exhausted pool shows up as latency inside the acquire, not as an error."
+          description: "Check pool utilization first - an exhausted pool shows up as latency inside the acquire, not as an error."
 
       - alert: PostgresPoolSaturated
         expr: instance:pgxpool_connections:utilization > 0.9

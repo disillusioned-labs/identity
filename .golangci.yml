@@ -20,7 +20,7 @@ linters:
         # plain values plus functional options and know nothing about this
         # application, which is what keeps them constructible from a test or a
         # one-off tool with no config.Config. Grouping them under one directory
-        # is only safe while that rule is enforced — otherwise "platform"
+        # is only safe while that rule is enforced - otherwise "platform"
         # becomes the dumping ground every such directory turns into.
         platform-stays-generic:
           files:
