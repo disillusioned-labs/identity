@@ -32,7 +32,7 @@ func MaxConnLifetime(d time.Duration) Option {
 
 // QueryExecMode selects pgx's statement protocol by name, as accepted in
 // config: cache_statement (pgx's default), cache_describe, describe_exec, exec,
-// simple_protocol. An unknown name is ignored, leaving pgx's default — config
+// simple_protocol. An unknown name is ignored, leaving pgx's default - config
 // validation is what rejects typos.
 //
 // This exists because server-side prepared statements, which cache_statement

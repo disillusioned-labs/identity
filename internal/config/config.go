@@ -10,11 +10,12 @@
 // for every Service in the namespace).
 //
 // .env.example is the single list of available settings, written exactly as
-// a deployment sets them — there is deliberately one vocabulary, not a
+// a deployment sets them - there is deliberately one vocabulary, not a
 // config.yaml shadowing the env vars.
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -38,6 +39,7 @@ type Config struct {
 	OTel      OTelConfig      `mapstructure:"otel"`
 	Log       LogConfig       `mapstructure:"log"`
 	RateLimit RateLimitConfig `mapstructure:"ratelimit"`
+	Auth      AuthConfig      `mapstructure:"auth"`
 }
 
 // ServiceConfig identifies this service in logs and telemetry.
@@ -82,12 +84,12 @@ type ServerConfig struct {
 //
 // It is a separate listener from /metrics, which is served on the public router,
 // because the two have opposite exposure requirements: a scraper must reach
-// metrics from off-host, while pprof — raw memory plus an easy way to burn CPU —
+// metrics from off-host, while pprof - raw memory plus an easy way to burn CPU -
 // must never be routable. One listener cannot be both, so pprof is hardcoded to
 // loopback with no host knob to get wrong.
 type PprofConfig struct {
 	// Enabled turns the listener on. Off by default: this is an attack-surface
-	// decision, not a performance one — pprof samples nothing until an endpoint
+	// decision, not a performance one - pprof samples nothing until an endpoint
 	// is actually requested.
 	Enabled bool `mapstructure:"enabled"`
 	// Port is the loopback port to bind when Enabled. Ignored otherwise, so it
@@ -110,7 +112,7 @@ type PostgresConfig struct {
 	// when talking to Postgres directly. Behind a connection pooler in
 	// transaction mode (pgbouncer, RDS Proxy, Supabase's 6543 port) server-side
 	// prepared statements break, and this must be "simple_protocol" or
-	// "exec" — a boilerplate-level footgun worth a knob.
+	// "exec" - a boilerplate-level footgun worth a knob.
 	QueryExecMode string `mapstructure:"query_exec_mode"`
 }
 
@@ -204,7 +206,7 @@ type CacheConfig struct {
 //     interval here.
 //
 // Unregistered OTEL_* still reach the exporter from the real environment
-// (_HEADERS, _TIMEOUT, _COMPRESSION) — but not from .env, which is parsed into
+// (_HEADERS, _TIMEOUT, _COMPRESSION) - but not from .env, which is parsed into
 // Viper rather than exported into the process.
 type OTelConfig struct {
 	// SDKDisabled turns off both signals; one signal is disabled with
@@ -290,6 +292,38 @@ type LogConfig struct {
 	Format string `mapstructure:"format"`
 }
 
+// AuthConfig holds JWT signing and refresh token settings.
+type AuthConfig struct {
+	// MasterKey is a 32-byte hex-encoded key used to AES-256-GCM encrypt RSA
+	// private keys at rest in signing_keys. Never logged.
+	MasterKey string `mapstructure:"master_key"`
+	// AccessTokenTTL controls how long an issued JWT is valid.
+	AccessTokenTTL time.Duration `mapstructure:"access_token_ttl"`
+	// RefreshTokenTTL controls how long a refresh token is valid.
+	RefreshTokenTTL time.Duration `mapstructure:"refresh_token_ttl"`
+	// Issuer is the "iss" claim stamped on every JWT.
+	Issuer string `mapstructure:"issuer"`
+}
+
+// LogValue keeps the master key out of logs.
+func (a AuthConfig) LogValue() slog.Value {
+	mk := ""
+	if a.MasterKey != "" {
+		mk = "xxxxx"
+	}
+	return slog.GroupValue(
+		slog.String("master_key", mk),
+		slog.Duration("access_token_ttl", a.AccessTokenTTL),
+		slog.Duration("refresh_token_ttl", a.RefreshTokenTTL),
+		slog.String("issuer", a.Issuer),
+	)
+}
+
+// MasterKeyBytes decodes the hex master key into raw bytes.
+func (a AuthConfig) MasterKeyBytes() ([]byte, error) {
+	return hex.DecodeString(a.MasterKey)
+}
+
 // RateLimitConfig bounds per-client-IP request rate on the API subtree. Probes
 // and /metrics are never limited (see server.New).
 //
@@ -328,7 +362,7 @@ func Load() (*Config, error) {
 
 	// Layer .env in as defaults rather than by setting process environment
 	// variables. Viper resolves AutomaticEnv before defaults, so a real
-	// environment variable still wins for free — and Load leaves no global
+	// environment variable still wins for free - and Load leaves no global
 	// state behind, which keeps it idempotent and safe to call from tests.
 	for _, key := range v.AllKeys() {
 		if value, ok := dotEnv[envKey(key)]; ok {
@@ -507,11 +541,29 @@ func (c *Config) validate() error {
 		}
 	}
 
+	if c.Auth.MasterKey == "" {
+		fail("auth.master_key must not be empty")
+	} else {
+		b, err := c.Auth.MasterKeyBytes()
+		if err != nil || len(b) != 32 {
+			fail("auth.master_key must be a 64-character hex string (32 bytes for AES-256)")
+		}
+	}
+	if c.Auth.AccessTokenTTL <= 0 {
+		fail("auth.access_token_ttl must be > 0, got %s", c.Auth.AccessTokenTTL)
+	}
+	if c.Auth.RefreshTokenTTL <= 0 {
+		fail("auth.refresh_token_ttl must be > 0, got %s", c.Auth.RefreshTokenTTL)
+	}
+	if c.Auth.Issuer == "" {
+		fail("auth.issuer must not be empty")
+	}
+
 	return errors.Join(errs...)
 }
 
 // validateOTLPEndpoint enforces the spec's URL form. The scheme selects TLS, so
-// a bare "host:4317" — what everyone types first — has no defined transport
+// a bare "host:4317" - what everyone types first - has no defined transport
 // security and is rejected with the fix spelled out.
 func validateOTLPEndpoint(endpoint string) error {
 	if endpoint == "" {
@@ -574,7 +626,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("otel.exporter_otlp_metrics_endpoint", "")
 	v.SetDefault("otel.traces_sampler", "parentbased_traceidratio")
 	v.SetDefault("otel.traces_sampler_arg", 1.0)
-	// Milliseconds, per spec — this is the OTel SDK's own default.
+	// Milliseconds, per spec - this is the OTel SDK's own default.
 	v.SetDefault("otel.metric_export_interval", 60000)
 
 	v.SetDefault("log.level", "info")
@@ -583,4 +635,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ratelimit.enabled", true)
 	v.SetDefault("ratelimit.requests", 40)
 	v.SetDefault("ratelimit.window", "1s")
+
+	// No default for auth.master_key — must be explicitly set; an empty key
+	// would silently break every token issued.
+	v.SetDefault("auth.master_key", "")
+	v.SetDefault("auth.access_token_ttl", "15m")
+	v.SetDefault("auth.refresh_token_ttl", "168h") // 7 days
+	v.SetDefault("auth.issuer", "identity")
 }

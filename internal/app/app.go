@@ -102,7 +102,7 @@ func Run(cfg *config.Config) error {
 	defer closeRedis()
 
 	redisRequired := cfg.Redis.Mode == config.RedisModeRequired
-	srv := server.New(cfg, log, buildDeps(pool, rdb, redisRequired, svcCache, log))
+	srv := server.New(cfg, log, buildDeps(pool, rdb, redisRequired, svcCache, cfg.Auth, log))
 	pprofSrv := server.NewPprofServer(cfg.Pprof.Enabled, cfg.Pprof.Port, log)
 
 	// Each listener runs in the group; the first hard failure cancels runCtx
@@ -139,7 +139,7 @@ func Run(cfg *config.Config) error {
 	if signalled {
 		// Fail readiness first, then keep serving for drain_delay. Kubernetes
 		// removes endpoints asynchronously, so a listener that closes the
-		// instant SIGTERM lands still receives connections — the usual source
+		// instant SIGTERM lands still receives connections - the usual source
 		// of 502s during a rolling deploy.
 		srv.BeginDrain()
 		if d := cfg.Server.DrainDelay; d > 0 {

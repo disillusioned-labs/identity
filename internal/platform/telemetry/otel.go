@@ -30,7 +30,7 @@ import (
 )
 
 // Option enables one telemetry pipeline. Neither signal is on unless its
-// option is passed — the caller decides from its own config.
+// option is passed - the caller decides from its own config.
 type Option func(*options)
 
 type options struct {
@@ -74,7 +74,7 @@ func WithMetrics(endpointURL string, interval time.Duration) Option {
 }
 
 // WithBuild stamps build provenance onto the OTel resource, surfacing in
-// Prometheus as target_info{service_version, vcs_ref_head_revision} — which is
+// Prometheus as target_info{service_version, vcs_ref_head_revision} - which is
 // what ties a regression to a deploy. Values come from link-time -ldflags;
 // empty strings leave the attributes off rather than recording "".
 func WithBuild(version, revision string) Option {
@@ -110,7 +110,7 @@ func NewSampler(name string, arg float64) (sdktrace.Sampler, error) {
 // flushes and shuts down every provider; call it on process exit.
 //
 // A signal whose option is absent installs no provider, leaving OTel's no-op in
-// place — so no caller downstream needs a nil check.
+// place - so no caller downstream needs a nil check.
 func Setup(ctx context.Context, serviceName, env string, opts ...Option) (func(context.Context) error, error) {
 	var o options
 	for _, opt := range opts {

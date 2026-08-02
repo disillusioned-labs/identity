@@ -15,7 +15,7 @@ import (
 
 // Migrate applies all pending goose migrations against pool. It runs at boot so
 // a fresh Postgres (empty data dir) reaches the current schema without a
-// separate migration step — right for a boilerplate; production users disable
+// separate migration step - right for a boilerplate; production users disable
 // postgres.migrate and run goose from CI instead.
 //
 // goose speaks database/sql, so we open an *sql.DB over the existing pgx pool

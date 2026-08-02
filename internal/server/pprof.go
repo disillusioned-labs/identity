@@ -9,7 +9,7 @@ import (
 )
 
 // NewPprofServer builds a private pprof server bound to 127.0.0.1:<port>, or
-// returns nil when disabled — in which case no socket is opened and the caller
+// returns nil when disabled - in which case no socket is opened and the caller
 // starts no goroutine for it.
 //
 // It gets its own loopback-only listener rather than a path on the public

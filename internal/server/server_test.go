@@ -19,16 +19,11 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 
-	usersvc "github.com/disillusioned-labs/identity/internal/service/user"
+	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
 )
 
-// stubUserService lets the router build without a real service; List returns
-// empty so allowed requests succeed and we can observe the 429 on overflow.
-type stubUserService struct{ usersvc.Service }
-
-func (stubUserService) List(context.Context, int32, int32) ([]usersvc.User, error) {
-	return nil, nil
-}
+// stubAuthService lets the router build without a real service.
+type stubAuthService struct{ authservice.Service }
 
 // newTestServer builds the real router allowing 1 request per window, so the
 // second request is throttled.
@@ -43,7 +38,7 @@ func newTestServerWith(t *testing.T) *Server {
 		Redis:     config.RedisConfig{Mode: config.RedisModeDisabled},
 		RateLimit: config.RateLimitConfig{Enabled: true, Requests: 1, Window: time.Second},
 	}
-	return New(cfg, slog.New(slog.DiscardHandler), Deps{Users: stubUserService{}})
+	return New(cfg, slog.New(slog.DiscardHandler), Deps{Auth: stubAuthService{}})
 }
 
 func TestRateLimitEnvelope(t *testing.T) {
@@ -51,15 +46,15 @@ func TestRateLimitEnvelope(t *testing.T) {
 
 	do := func() *httptest.ResponseRecorder {
 		// Same RemoteAddr each call so httprate keys them to one client.
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", nil)
 		req.RemoteAddr = "203.0.113.5:1234"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec
 	}
 
-	if rec := do(); rec.Code != http.StatusOK {
-		t.Fatalf("first request: want 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	if rec := do(); rec.Code == http.StatusTooManyRequests {
+		t.Fatalf("first request: must not be rate-limited, got 429")
 	}
 
 	rec := do()
@@ -125,7 +120,7 @@ func TestRequestMetricsCarryRoutePattern(t *testing.T) {
 	// when the handler is constructed.
 	h := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", nil)
 	req.RemoteAddr = "203.0.113.5:1234"
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -134,8 +129,8 @@ func TestRequestMetricsCarryRoutePattern(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/nope/12345", nil))
 
 	routes := recordedRoutes(t, reader)
-	if !slices.Contains(routes, "/api/v1/users") {
-		t.Fatalf("want an http.route=/api/v1/users data point, got routes %q", routes)
+	if !slices.Contains(routes, "/api/v1/auth/register") {
+		t.Fatalf("want an http.route=/api/v1/auth/register data point, got routes %v", routes)
 	}
 	if slices.Contains(routes, "/nope/12345") {
 		t.Fatalf("unmatched path leaked into http.route: %q", routes)
@@ -191,7 +186,7 @@ func TestProbesAreNotTraced(t *testing.T) {
 	}
 
 	// The filter must be scoped to probes, not disable tracing outright.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", nil)
 	req.RemoteAddr = "203.0.113.5:1234"
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if len(recorder.Ended()) == 0 {
@@ -212,7 +207,7 @@ func TestPprofNotOnPublicRouter(t *testing.T) {
 	}
 }
 
-// The pprof listener binds loopback only — a routable bind would expose memory
+// The pprof listener binds loopback only - a routable bind would expose memory
 // contents and let any caller trigger expensive profiles.
 func TestPprofServerBindsLoopbackOnly(t *testing.T) {
 	srv := NewPprofServer(true, 6060, slog.New(slog.DiscardHandler))
@@ -233,7 +228,7 @@ func TestPprofServerBindsLoopbackOnly(t *testing.T) {
 	}
 }
 
-// Disabled must mean no server at all — app.go keys the goroutine and the
+// Disabled must mean no server at all - app.go keys the goroutine and the
 // listening socket off this nil, so a non-nil return would run both. A
 // configured port is ignored while disabled.
 func TestPprofServerDisabledReturnsNil(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/handler"
+	authhandler "github.com/disillusioned-labs/identity/internal/handler/auth"
 	"github.com/disillusioned-labs/identity/internal/handler/health"
-	"github.com/disillusioned-labs/identity/internal/handler/user"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -20,7 +20,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	usersvc "github.com/disillusioned-labs/identity/internal/service/user"
+	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
 )
 
 // Server wraps the http.Server with the assembled router and logger.
@@ -49,19 +49,15 @@ func (p redisPinger) Ping(ctx context.Context) error { return p.rdb.Ping(ctx).Er
 // Deps carries everything the router needs. Adding a resource adds a field
 // here; New's signature never changes.
 type Deps struct {
-	Users usersvc.Service
+	Auth authservice.Service
 
-	// Infrastructure handles for health checks. Redis may be nil when
-	// disabled or unreachable in optional mode.
-	Pool  *pgxpool.Pool
-	Redis *goredis.Client
-	// RedisRequired makes a failing Redis ping fail /readyz. The caller
-	// derives it from redis.mode; the server never reads config for it.
+	Pool          *pgxpool.Pool
+	Redis         *goredis.Client
 	RedisRequired bool
 }
 
-// New assembles the router — middleware chain, probes, /metrics, and every
-// /api/v1 resource — into a ready-to-start Server.
+// New assembles the router - middleware chain, probes, /metrics, and every
+// /api/v1 resource - into a ready-to-start Server.
 func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 	r := chi.NewRouter()
 
@@ -103,8 +99,8 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 	// distributions and pool sizes on an unauthenticated public port.
 
 	r.Route("/api/v1", func(r chi.Router) {
-		// Rate limit only the API subtree so health probes — hit constantly by
-		// orchestrators — are never throttled. Requests is the per-IP count
+		// Rate limit only the API subtree so health probes - hit constantly by
+		// orchestrators - are never throttled. Requests is the per-IP count
 		// allowed in each window; over it returns 429 through the standard
 		// envelope.
 		if cfg.RateLimit.Enabled {
@@ -119,12 +115,12 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 				}),
 			))
 		}
-		r.Mount("/users", user.NewHandler(deps.Users, log).Routes())
+		r.Mount("/auth", authhandler.NewHandler(deps.Auth, log).Routes())
 	})
 
 	// otelhttp wraps the whole router: creates the server span, extracts
 	// incoming trace context, and records HTTP metrics. The filter drops probes
-	// from both signals — always-fast probe traffic in the same histogram drags
+	// from both signals - always-fast probe traffic in the same histogram drags
 	// the p99 down and dilutes the error-ratio denominator.
 	root := otelhttp.NewHandler(r, "http.server",
 		otelhttp.WithFilter(func(r *http.Request) bool { return !isProbe(r.URL.Path) }),

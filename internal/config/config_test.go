@@ -12,7 +12,7 @@ import (
 )
 
 // .env.example is the documented list of every setting, so a key that no longer
-// exists — or a value that would not validate — has to fail here. Nothing else
+// exists - or a value that would not validate - has to fail here. Nothing else
 // in CI loads it, and a developer copying it to .env is the first to find out
 // otherwise.
 //
@@ -45,7 +45,7 @@ func TestShippedExampleEnvIsValid(t *testing.T) {
 }
 
 // Every key in .env.example must be one the app actually reads. A typo
-// here is invisible at runtime — the setting is simply ignored forever.
+// here is invisible at runtime - the setting is simply ignored forever.
 func TestExampleEnvHasNoUnknownKeys(t *testing.T) {
 	f, err := os.Open("../../.env.example")
 	if err != nil {
@@ -78,9 +78,11 @@ func TestExampleEnvHasNoUnknownKeys(t *testing.T) {
 }
 
 // Defaults alone (no .env present) must be valid, since that is what a
-// container setting only what it needs runs on.
+// container setting only what it needs runs on. AUTH_MASTER_KEY has no default
+// (an empty key would silently break token issuance) so it must be supplied.
 func TestDefaultsAreValid(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv("AUTH_MASTER_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("defaults are invalid: %v", err)
@@ -97,6 +99,7 @@ func TestEnvironmentBeatsDotEnv(t *testing.T) {
 	}
 	t.Chdir(dir)
 	t.Setenv("SERVER_PORT", "2222")
+	t.Setenv("AUTH_MASTER_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
 
 	cfg, err := Load()
 	if err != nil {
@@ -289,6 +292,7 @@ func TestMetricExportIntervalIsMilliseconds(t *testing.T) {
 		t.Fatalf("write .env: %v", err)
 	}
 	t.Chdir(dir)
+	t.Setenv("AUTH_MASTER_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
 
 	cfg, err := Load()
 	if err != nil {
@@ -317,6 +321,7 @@ func TestDisabledOTelSettingsAreInert(t *testing.T) {
 // replicas racing to migrate on rollout must be opt-in.
 func TestMigrateDefaultsOff(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv("AUTH_MASTER_KEY", "0000000000000000000000000000000000000000000000000000000000000000")
 
 	cfg, err := Load()
 	if err != nil {
@@ -393,5 +398,11 @@ func validConfig() *Config {
 		},
 		Log:       LogConfig{Level: "info", Format: "json"},
 		RateLimit: RateLimitConfig{Enabled: true, Requests: 40, Window: time.Second},
+		Auth: AuthConfig{
+			MasterKey:       "0000000000000000000000000000000000000000000000000000000000000000",
+			AccessTokenTTL:  15 * time.Minute,
+			RefreshTokenTTL: 168 * time.Hour,
+			Issuer:          "identity",
+		},
 	}
 }
