@@ -2,6 +2,7 @@ package auth
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 
@@ -36,9 +37,11 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	output, err := h.svc.Register(ctx, authservice.RegisterInput{
-		Name:     strings.TrimSpace(req.Name),
-		Email:    strings.TrimSpace(req.Email),
-		Password: req.Password,
+		Name:      strings.TrimSpace(req.Name),
+		Email:     strings.TrimSpace(req.Email),
+		Password:  req.Password,
+		UserAgent: r.UserAgent(),
+		IPAddress: clientIP(r),
 	})
 	if err != nil {
 		handler.WriteServiceError(w, r, h.log, err)
@@ -46,4 +49,37 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	span.SetAttributes(attribute.String("user.id", output.User.ID.String()))
 	handler.OK(w, http.StatusCreated, toRegisterResponse(output))
+}
+
+func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.login")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	req, ok := handler.DecodeValid[LoginRequest](w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "decode/validate failed")
+		return
+	}
+
+	output, err := h.svc.Login(ctx, authservice.LoginInput{
+		Email:     strings.TrimSpace(req.Email),
+		Password:  req.Password,
+		UserAgent: r.UserAgent(),
+		IPAddress: clientIP(r),
+	})
+	if err != nil {
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+	span.SetAttributes(attribute.String("user.id", output.User.ID.String()))
+	handler.OK(w, http.StatusOK, toLoginResponse(output))
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return ""
+	}
+	return host
 }

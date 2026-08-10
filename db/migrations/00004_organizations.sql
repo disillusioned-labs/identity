@@ -15,5 +15,11 @@ CREATE TRIGGER trg_organizations_updated_at
     BEFORE UPDATE ON organizations
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+ALTER TABLE users
+    ADD CONSTRAINT fk_users_last_active_organization
+    FOREIGN KEY (last_active_organization_id) REFERENCES organizations(id);
+
 -- +goose Down
+ALTER TABLE users DROP CONSTRAINT IF EXISTS fk_users_last_active_organization;
+
 DROP TABLE organizations;

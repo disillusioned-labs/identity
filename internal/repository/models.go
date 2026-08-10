@@ -67,11 +67,12 @@ type SigningKey struct {
 }
 
 type User struct {
-	ID        uuid.UUID          `json:"id"`
-	Email     string             `json:"email"`
-	Password  string             `json:"password"`
-	Name      string             `json:"name"`
-	CreatedAt time.Time          `json:"created_at"`
-	UpdatedAt time.Time          `json:"updated_at"`
-	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+	ID                       uuid.UUID          `json:"id"`
+	Email                    string             `json:"email"`
+	Password                 string             `json:"password"`
+	Name                     string             `json:"name"`
+	LastActiveOrganizationID *uuid.UUID         `json:"last_active_organization_id"`
+	CreatedAt                time.Time          `json:"created_at"`
+	UpdatedAt                time.Time          `json:"updated_at"`
+	DeletedAt                pgtype.Timestamptz `json:"deleted_at"`
 }

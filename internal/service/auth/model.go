@@ -3,12 +3,27 @@ package auth
 import "github.com/google/uuid"
 
 type RegisterInput struct {
-	Name     string
-	Email    string
-	Password string
+	Name      string
+	Email     string
+	Password  string
+	UserAgent string
+	IPAddress string
 }
 
 type RegisterOutput struct {
+	User         UserOutput
+	Organization OrganizationOutput
+	Tokens       TokensOutput
+}
+
+type LoginInput struct {
+	Email     string
+	Password  string
+	UserAgent string
+	IPAddress string
+}
+
+type LoginOutput struct {
 	User         UserOutput
 	Organization OrganizationOutput
 	Tokens       TokensOutput

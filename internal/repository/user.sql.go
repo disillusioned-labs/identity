@@ -41,3 +41,51 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateU
 	)
 	return i, err
 }
+
+const getUserByEmail = `-- name: GetUserByEmail :one
+SELECT id, email, password, name, last_active_organization_id
+FROM users
+WHERE lower(email) = lower($1::text)
+  AND deleted_at IS NULL
+`
+
+type GetUserByEmailRow struct {
+	ID                       uuid.UUID  `json:"id"`
+	Email                    string     `json:"email"`
+	Password                 string     `json:"password"`
+	Name                     string     `json:"name"`
+	LastActiveOrganizationID *uuid.UUID `json:"last_active_organization_id"`
+}
+
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error) {
+	row := q.db.QueryRow(ctx, getUserByEmail, email)
+	var i GetUserByEmailRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Password,
+		&i.Name,
+		&i.LastActiveOrganizationID,
+	)
+	return i, err
+}
+
+const setLastActiveOrganization = `-- name: SetLastActiveOrganization :execrows
+UPDATE users
+SET last_active_organization_id = $2
+WHERE id = $1
+  AND deleted_at IS NULL
+`
+
+type SetLastActiveOrganizationParams struct {
+	ID                       uuid.UUID  `json:"id"`
+	LastActiveOrganizationID *uuid.UUID `json:"last_active_organization_id"`
+}
+
+func (q *Queries) SetLastActiveOrganization(ctx context.Context, arg SetLastActiveOrganizationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setLastActiveOrganization, arg.ID, arg.LastActiveOrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

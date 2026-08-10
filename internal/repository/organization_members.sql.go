@@ -35,3 +35,79 @@ func (q *Queries) CreateOrganizationMember(ctx context.Context, arg CreateOrgani
 	err := row.Scan(&i.OrganizationID, &i.UserID, &i.Role)
 	return i, err
 }
+
+const getMembership = `-- name: GetMembership :one
+SELECT m.organization_id, m.role, o.name, o.type
+FROM organization_members m
+         JOIN organizations o ON o.id = m.organization_id
+WHERE m.user_id = $1
+  AND m.organization_id = $2
+  AND m.deleted_at IS NULL
+  AND o.deleted_at IS NULL
+`
+
+type GetMembershipParams struct {
+	UserID         uuid.UUID `json:"user_id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+}
+
+type GetMembershipRow struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Role           string    `json:"role"`
+	Name           string    `json:"name"`
+	Type           string    `json:"type"`
+}
+
+func (q *Queries) GetMembership(ctx context.Context, arg GetMembershipParams) (GetMembershipRow, error) {
+	row := q.db.QueryRow(ctx, getMembership, arg.UserID, arg.OrganizationID)
+	var i GetMembershipRow
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.Role,
+		&i.Name,
+		&i.Type,
+	)
+	return i, err
+}
+
+const listUserMemberships = `-- name: ListUserMemberships :many
+SELECT m.organization_id, m.role, o.name, o.type
+FROM organization_members m
+         JOIN organizations o ON o.id = m.organization_id
+WHERE m.user_id = $1
+  AND m.deleted_at IS NULL
+  AND o.deleted_at IS NULL
+ORDER BY m.joined_at
+`
+
+type ListUserMembershipsRow struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Role           string    `json:"role"`
+	Name           string    `json:"name"`
+	Type           string    `json:"type"`
+}
+
+func (q *Queries) ListUserMemberships(ctx context.Context, userID uuid.UUID) ([]ListUserMembershipsRow, error) {
+	rows, err := q.db.Query(ctx, listUserMemberships, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserMembershipsRow{}
+	for rows.Next() {
+		var i ListUserMembershipsRow
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.Role,
+			&i.Name,
+			&i.Type,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

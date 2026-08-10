@@ -2,8 +2,10 @@ package user
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -14,6 +16,8 @@ import (
 
 type UserService interface {
 	Create(ctx context.Context, querier repository.Querier, input CreateInput) (CreateOutput, error)
+	GetByEmail(ctx context.Context, querier repository.Querier, input GetByEmailInput) (GetByEmailOutput, error)
+	SetLastActiveOrganization(ctx context.Context, querier repository.Querier, input SetLastActiveOrganizationInput) error
 }
 
 type userService struct {
@@ -50,4 +54,51 @@ func (s *userService) Create(ctx context.Context, querier repository.Querier, in
 	}
 
 	return CreateOutput{ID: row.ID, Name: row.Name, Email: row.Email}, nil
+}
+
+func (s *userService) GetByEmail(ctx context.Context, querier repository.Querier, input GetByEmailInput) (GetByEmailOutput, error) {
+	ctx, span := s.tracer.Start(ctx, "UserService.GetByEmail")
+	defer span.End()
+
+	row, err := querier.GetUserByEmail(ctx, input.Email)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "user not found")
+			return GetByEmailOutput{}, service.ErrNotFound
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get user by email failed")
+		s.log.ErrorContext(ctx, "get user by email failed", "error", err)
+		return GetByEmailOutput{}, service.ErrInternal
+	}
+
+	return GetByEmailOutput{
+		ID:                       row.ID,
+		Name:                     row.Name,
+		Email:                    row.Email,
+		HashedPassword:           row.Password,
+		LastActiveOrganizationID: row.LastActiveOrganizationID,
+	}, nil
+}
+
+func (s *userService) SetLastActiveOrganization(ctx context.Context, querier repository.Querier, input SetLastActiveOrganizationInput) error {
+	ctx, span := s.tracer.Start(ctx, "UserService.SetLastActiveOrganization")
+	defer span.End()
+
+	rows, err := querier.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
+		ID:                       input.UserID,
+		LastActiveOrganizationID: &input.OrganizationID,
+	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "set last active organization failed")
+		s.log.ErrorContext(ctx, "set last active organization failed", "error", err)
+		return service.ErrInternal
+	}
+	if rows == 0 {
+		span.SetStatus(codes.Error, "user not found")
+		return service.ErrNotFound
+	}
+
+	return nil
 }

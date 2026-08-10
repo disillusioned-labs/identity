@@ -6,6 +6,8 @@ package repository
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 type Querier interface {
@@ -14,8 +16,12 @@ type Querier interface {
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (CreateRefreshTokenRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
+	GetMembership(ctx context.Context, arg GetMembershipParams) (GetMembershipRow, error)
+	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
+	ListUserMemberships(ctx context.Context, userID uuid.UUID) ([]ListUserMembershipsRow, error)
 	RotateSigningKey(ctx context.Context) error
+	SetLastActiveOrganization(ctx context.Context, arg SetLastActiveOrganizationParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)
