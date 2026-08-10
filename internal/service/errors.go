@@ -41,15 +41,14 @@ func NewError(code string, status int, message string) *Error {
 	return &Error{Code: code, Status: status, Message: message}
 }
 
-// Domain errors shared across resources. Resource-specific ones belong in the
-// resource's own service package.
 var (
-	ErrNotFound   = NewError("NOT_FOUND", http.StatusNotFound, "resource not found")
-	ErrEmailTaken = NewError("EMAIL_TAKEN", http.StatusConflict, "email already taken")
-	ErrInternal   = NewError("INTERNAL", http.StatusInternalServerError, "internal server error")
-
 	ErrUnauthenticated = NewError("UNAUTHENTICATED", http.StatusUnauthorized, "invalid credentials")
 	ErrForbidden       = NewError("FORBIDDEN", http.StatusForbidden, "forbidden")
+	ErrNotFound        = NewError("NOT_FOUND", http.StatusNotFound, "resource not found")
+	ErrConflict        = NewError("CONFLICT", http.StatusConflict, "conflicts with existing data")
+	ErrInternal        = NewError("INTERNAL", http.StatusInternalServerError, "internal server error")
+
+	ErrEmailTaken = NewError("EMAIL_TAKEN", http.StatusConflict, "email already taken")
 )
 
 const pgUniqueViolation = "23505"
