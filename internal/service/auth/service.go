@@ -2,11 +2,15 @@ package auth
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -14,12 +18,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
+	"github.com/disillusioned-labs/identity/internal/platform/crypto"
+	platformjwt "github.com/disillusioned-labs/identity/internal/platform/jwt"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
-	jwtservice "github.com/disillusioned-labs/identity/internal/service/jwt"
-	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
-	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
-	userservice "github.com/disillusioned-labs/identity/internal/service/user"
 )
 
 type AuthService interface {
@@ -29,31 +31,31 @@ type AuthService interface {
 }
 
 type authService struct {
-	repo    repository.Store
-	users   userservice.UserService
-	orgs    organizationservice.OrganizationService
-	members organizationmemberservice.OrganizationMemberService
-	jwt     jwtservice.JWTService
-	log     *slog.Logger
-	tracer  trace.Tracer
+	repo            repository.Store
+	masterKey       []byte
+	accessTokenTTL  time.Duration
+	refreshTokenTTL time.Duration
+	issuer          string
+	log             *slog.Logger
+	tracer          trace.Tracer
 }
 
 func NewAuthService(
 	repo repository.Store,
-	users userservice.UserService,
-	orgs organizationservice.OrganizationService,
-	members organizationmemberservice.OrganizationMemberService,
-	jwt jwtservice.JWTService,
+	masterKey []byte,
+	accessTokenTTL time.Duration,
+	refreshTokenTTL time.Duration,
+	issuer string,
 	log *slog.Logger,
 ) AuthService {
 	return &authService{
-		repo:    repo,
-		users:   users,
-		orgs:    orgs,
-		members: members,
-		jwt:     jwt,
-		log:     log,
-		tracer:  otel.Tracer("service/auth"),
+		repo:            repo,
+		masterKey:       masterKey,
+		accessTokenTTL:  accessTokenTTL,
+		refreshTokenTTL: refreshTokenTTL,
+		issuer:          issuer,
+		log:             log,
+		tracer:          otel.Tracer("service/auth"),
 	}
 }
 
@@ -69,20 +71,26 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 		return RegisterOutput{}, service.ErrInternal
 	}
 
-	var createdUser userservice.CreateOutput
-	var createdOrg organizationservice.CreateOutput
+	var (
+		user   repository.CreateUserRow
+		org    repository.CreateOrganizationRow
+		tokens tokens
+	)
 
-	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
-		u, err := s.users.Create(ctx, querier, userservice.CreateInput{
-			Name:           input.Name,
-			Email:          input.Email,
-			HashedPassword: string(hash),
+	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		user, err = q.CreateUser(ctx, repository.CreateUserParams{
+			Email:    input.Email,
+			Password: string(hash),
+			Name:     input.Name,
 		})
 		if err != nil {
+			if service.IsUniqueViolation(err) {
+				return service.ErrEmailTaken
+			}
 			return err
 		}
 
-		org, err := s.orgs.Create(ctx, querier, organizationservice.CreateInput{
+		org, err = q.CreateOrganization(ctx, repository.CreateOrganizationParams{
 			Name: "Personal " + input.Name,
 			Type: constant.OrganizationTypePersonal,
 		})
@@ -90,104 +98,82 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			return err
 		}
 
-		if err := s.members.Create(ctx, querier, organizationmemberservice.CreateInput{
+		if _, err := q.CreateOrganizationMember(ctx, repository.CreateOrganizationMemberParams{
 			OrganizationID: org.ID,
-			UserID:         u.ID,
+			UserID:         user.ID,
 			Role:           constant.RoleOwner,
 		}); err != nil {
 			return err
 		}
 
-		if err := s.users.SetLastActiveOrganization(ctx, querier, userservice.SetLastActiveOrganizationInput{
-			UserID:         u.ID,
-			OrganizationID: org.ID,
+		if _, err := q.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
+			ID:                       user.ID,
+			LastActiveOrganizationID: &org.ID,
 		}); err != nil {
 			return err
 		}
 
-		createdUser = u
-		createdOrg = org
-		return nil
+		tokens, err = s.issueTokens(ctx, q, issueParams{
+			UserID:    user.ID,
+			OrgID:     org.ID,
+			Role:      constant.RoleOwner,
+			UserAgent: input.UserAgent,
+			IPAddress: input.IPAddress,
+		})
+		return err
 	})
 	if err != nil {
-		if !service.IsError(err) {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "register transaction failed")
-			s.log.ErrorContext(ctx, "register transaction failed", "error", err)
-			return RegisterOutput{}, service.ErrInternal
-		}
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return RegisterOutput{}, err
+		return RegisterOutput{}, s.txError(ctx, span, err, "register transaction failed")
 	}
 
 	span.SetAttributes(
-		attribute.String("user.id", createdUser.ID.String()),
-		attribute.String("organization.id", createdOrg.ID.String()),
+		attribute.String("user.id", user.ID.String()),
+		attribute.String("organization.id", org.ID.String()),
 	)
-
-	tokens, err := s.jwt.Issue(ctx, s.repo, jwtservice.IssueInput{
-		UserID:    createdUser.ID,
-		OrgID:     createdOrg.ID,
-		Role:      constant.RoleOwner,
-		UserAgent: input.UserAgent,
-		IPAddress: input.IPAddress,
-	})
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "issue tokens failed")
-		s.log.ErrorContext(ctx, "issue tokens failed", "error", err)
-		return RegisterOutput{}, service.ErrInternal
-	}
 
 	return RegisterOutput{
 		User: UserOutput{
-			ID:    createdUser.ID,
-			Name:  createdUser.Name,
-			Email: createdUser.Email,
+			ID:    user.ID,
+			Name:  user.Name,
+			Email: user.Email,
 		},
 		Organization: OrganizationOutput{
-			ID:   createdOrg.ID,
-			Name: createdOrg.Name,
-			Type: createdOrg.Type,
+			ID:   org.ID,
+			Name: org.Name,
+			Type: org.Type,
 			Role: constant.RoleOwner,
 		},
-		Tokens: TokensOutput{
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			ExpiresIn:    tokens.ExpiresIn,
-		},
+		Tokens: TokensOutput(tokens),
 	}, nil
 }
-
-var dummyHash = []byte("$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy")
 
 func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput, error) {
 	ctx, span := s.tracer.Start(ctx, "AuthService.Login")
 	defer span.End()
 
-	user, err := s.users.GetByEmail(ctx, s.repo, userservice.GetByEmailInput{Email: input.Email})
+	user, err := s.repo.GetUserByEmail(ctx, input.Email)
 	if err != nil {
-		if errors.Is(err, service.ErrNotFound) {
-			_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(input.Password))
+		if errors.Is(err, pgx.ErrNoRows) {
 			span.SetStatus(codes.Error, "invalid credentials")
 			return LoginOutput{}, service.ErrUnauthenticated
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "lookup user failed")
-		return LoginOutput{}, err
+		s.log.ErrorContext(ctx, "lookup user failed", "error", err)
+		return LoginOutput{}, service.ErrInternal
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(input.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
 		span.SetStatus(codes.Error, "invalid credentials")
 		return LoginOutput{}, service.ErrUnauthenticated
 	}
 
-	memberships, err := s.members.ListByUser(ctx, s.repo, organizationmemberservice.ListByUserInput{UserID: user.ID})
+	memberships, err := s.repo.ListUserMemberships(ctx, user.ID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "list memberships failed")
-		return LoginOutput{}, err
+		s.log.ErrorContext(ctx, "list memberships failed", "error", err)
+		return LoginOutput{}, service.ErrInternal
 	}
 	if len(memberships) == 0 {
 		span.SetStatus(codes.Error, "user has no active organization")
@@ -202,29 +188,30 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		attribute.String("organization.id", active.OrganizationID.String()),
 	)
 
-	if user.LastActiveOrganizationID == nil || *user.LastActiveOrganizationID != active.OrganizationID {
-		if err := s.users.SetLastActiveOrganization(ctx, s.repo, userservice.SetLastActiveOrganizationInput{
-			UserID:         user.ID,
-			OrganizationID: active.OrganizationID,
-		}); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "set last active organization failed")
-			return LoginOutput{}, err
-		}
-	}
+	var tokens tokens
 
-	tokens, err := s.jwt.Issue(ctx, s.repo, jwtservice.IssueInput{
-		UserID:    user.ID,
-		OrgID:     active.OrganizationID,
-		Role:      active.Role,
-		UserAgent: input.UserAgent,
-		IPAddress: input.IPAddress,
+	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if user.LastActiveOrganizationID == nil || *user.LastActiveOrganizationID != active.OrganizationID {
+			if _, err := q.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
+				ID:                       user.ID,
+				LastActiveOrganizationID: &active.OrganizationID,
+			}); err != nil {
+				return err
+			}
+		}
+
+		var err error
+		tokens, err = s.issueTokens(ctx, q, issueParams{
+			UserID:    user.ID,
+			OrgID:     active.OrganizationID,
+			Role:      active.Role,
+			UserAgent: input.UserAgent,
+			IPAddress: input.IPAddress,
+		})
+		return err
 	})
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "issue tokens failed")
-		s.log.ErrorContext(ctx, "issue tokens failed", "error", err)
-		return LoginOutput{}, service.ErrInternal
+		return LoginOutput{}, s.txError(ctx, span, err, "login transaction failed")
 	}
 
 	return LoginOutput{
@@ -235,15 +222,11 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		},
 		Organization: OrganizationOutput{
 			ID:   active.OrganizationID,
-			Name: active.OrganizationName,
-			Type: active.OrganizationType,
+			Name: active.Name,
+			Type: active.Type,
 			Role: active.Role,
 		},
-		Tokens: TokensOutput{
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			ExpiresIn:    tokens.ExpiresIn,
-		},
+		Tokens: TokensOutput(tokens),
 	}, nil
 }
 
@@ -251,26 +234,26 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 	ctx, span := s.tracer.Start(ctx, "AuthService.Refresh")
 	defer span.End()
 
-	stored, err := s.jwt.LookupRefreshToken(ctx, s.repo, jwtservice.LookupRefreshTokenInput{
-		RefreshToken: input.RefreshToken,
-	})
+	stored, err := s.repo.GetRefreshTokenByHash(ctx, platformjwt.HashRefreshToken(input.RefreshToken))
 	if err != nil {
-		if errors.Is(err, service.ErrNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			span.SetStatus(codes.Error, "refresh token not found")
 			return RefreshOutput{}, service.ErrUnauthenticated
 		}
 		span.RecordError(err)
-		return RefreshOutput{}, err
+		span.SetStatus(codes.Error, "lookup refresh token failed")
+		s.log.ErrorContext(ctx, "lookup refresh token failed", "error", err)
+		return RefreshOutput{}, service.ErrInternal
 	}
 
-	if stored.RevokedAt != nil {
+	if stored.RevokedAt.Valid {
 		s.log.WarnContext(ctx, "revoked refresh token replayed, revoking every session",
 			"user_id", stored.UserID)
-		if err := s.jwt.RevokeAllUserRefreshTokens(ctx, s.repo, jwtservice.RevokeAllUserRefreshTokensInput{
-			UserID: stored.UserID,
-		}); err != nil {
+		if _, err := s.repo.RevokeAllUserRefreshTokens(ctx, stored.UserID); err != nil {
 			span.RecordError(err)
-			return RefreshOutput{}, err
+			span.SetStatus(codes.Error, "revoke all user refresh tokens failed")
+			s.log.ErrorContext(ctx, "revoke all user refresh tokens failed", "error", err)
+			return RefreshOutput{}, service.ErrInternal
 		}
 		span.SetStatus(codes.Error, "refresh token reuse detected")
 		return RefreshOutput{}, service.ErrUnauthenticated
@@ -281,81 +264,171 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 		return RefreshOutput{}, service.ErrUnauthenticated
 	}
 
-	var tokens jwtservice.IssueOutput
+	var tokens tokens
 
-	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
-		user, err := s.users.GetByID(ctx, querier, userservice.GetByIDInput{ID: stored.UserID})
+	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		user, err := q.GetUserByID(ctx, stored.UserID)
 		if err != nil {
-			if errors.Is(err, service.ErrNotFound) {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return service.ErrUnauthenticated
 			}
 			return err
 		}
-
 		if user.LastActiveOrganizationID == nil {
 			return service.ErrUnauthenticated
 		}
 
-		membership, err := s.members.Get(ctx, querier, organizationmemberservice.GetInput{
+		membership, err := q.GetMembership(ctx, repository.GetMembershipParams{
 			UserID:         user.ID,
 			OrganizationID: *user.LastActiveOrganizationID,
 		})
 		if err != nil {
-			if errors.Is(err, service.ErrNotFound) {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return service.ErrUnauthenticated
 			}
 			return err
 		}
 
-		if err := s.jwt.RevokeRefreshToken(ctx, querier, jwtservice.RevokeRefreshTokenInput{ID: stored.ID}); err != nil {
-			if errors.Is(err, service.ErrNotFound) {
-				return service.ErrUnauthenticated
-			}
-			return err
-		}
-
-		issued, err := s.jwt.Issue(ctx, querier, jwtservice.IssueInput{
-			UserID:    user.ID,
-			OrgID:     membership.OrganizationID,
-			Role:      membership.Role,
-			UserAgent: input.UserAgent,
-			IPAddress: input.IPAddress,
-		})
+		revoked, err := q.RevokeRefreshToken(ctx, stored.ID)
 		if err != nil {
 			return err
+		}
+		if revoked == 0 {
+			return service.ErrUnauthenticated
 		}
 
 		span.SetAttributes(
 			attribute.String("user.id", user.ID.String()),
 			attribute.String("organization.id", membership.OrganizationID.String()),
 		)
-		tokens = issued
-		return nil
+
+		tokens, err = s.issueTokens(ctx, q, issueParams{
+			UserID:    user.ID,
+			OrgID:     membership.OrganizationID,
+			Role:      membership.Role,
+			UserAgent: input.UserAgent,
+			IPAddress: input.IPAddress,
+		})
+		return err
 	})
 	if err != nil {
-		if !service.IsError(err) {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "refresh transaction failed")
-			s.log.ErrorContext(ctx, "refresh transaction failed", "error", err)
-			return RefreshOutput{}, service.ErrInternal
-		}
-		span.SetStatus(codes.Error, err.Error())
-		return RefreshOutput{}, err
+		return RefreshOutput{}, s.txError(ctx, span, err, "refresh transaction failed")
 	}
 
-	return RefreshOutput{
-		Tokens: TokensOutput{
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			ExpiresIn:    tokens.ExpiresIn,
-		},
+	return RefreshOutput{Tokens: TokensOutput(tokens)}, nil
+}
+
+type tokens struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int
+}
+
+type issueParams struct {
+	UserID    uuid.UUID
+	OrgID     uuid.UUID
+	Role      string
+	UserAgent string
+	IPAddress string
+}
+
+func (s *authService) issueTokens(ctx context.Context, q repository.Querier, params issueParams) (tokens, error) {
+	privKey, kid, err := s.loadSigningKey(ctx, q)
+	if err != nil {
+		return tokens{}, err
+	}
+
+	now := time.Now()
+
+	accessToken, err := platformjwt.Sign(privKey, kid, platformjwt.Claims{
+		Subject:   params.UserID.String(),
+		OrgID:     params.OrgID.String(),
+		Role:      params.Role,
+		Issuer:    s.issuer,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(s.accessTokenTTL),
+	})
+	if err != nil {
+		s.log.ErrorContext(ctx, "sign access token failed", "error", err)
+		return tokens{}, service.ErrInternal
+	}
+
+	refreshToken, err := platformjwt.GenerateRefreshToken()
+	if err != nil {
+		s.log.ErrorContext(ctx, "generate refresh token failed", "error", err)
+		return tokens{}, service.ErrInternal
+	}
+
+	var ipAddr *netip.Addr
+	if params.IPAddress != "" {
+		if parsed, err := netip.ParseAddr(params.IPAddress); err == nil {
+			ipAddr = &parsed
+		}
+	}
+
+	var ua pgtype.Text
+	if params.UserAgent != "" {
+		ua = pgtype.Text{String: params.UserAgent, Valid: true}
+	}
+
+	if _, err := q.CreateRefreshToken(ctx, repository.CreateRefreshTokenParams{
+		UserID:    params.UserID,
+		TokenHash: platformjwt.HashRefreshToken(refreshToken),
+		UserAgent: ua,
+		IpAddress: ipAddr,
+		ExpiresAt: now.Add(s.refreshTokenTTL),
+	}); err != nil {
+		return tokens{}, err
+	}
+
+	return tokens{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    int(s.accessTokenTTL.Seconds()),
 	}, nil
 }
 
+func (s *authService) loadSigningKey(ctx context.Context, q repository.Querier) (*rsa.PrivateKey, string, error) {
+	row, err := q.GetActiveSigningKey(ctx)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.log.ErrorContext(ctx, "no active signing key: seed one with cmd/generate-signing-key")
+			return nil, "", service.ErrInternal
+		}
+		s.log.ErrorContext(ctx, "load signing key failed", "error", err)
+		return nil, "", service.ErrInternal
+	}
+
+	privPEM, err := crypto.DecryptPrivateKey(row.PrivateKeyEncrypted, s.masterKey)
+	if err != nil {
+		s.log.ErrorContext(ctx, "decrypt signing key failed", "error", err)
+		return nil, "", service.ErrInternal
+	}
+
+	privKey, err := platformjwt.ParsePrivateKey(privPEM)
+	if err != nil {
+		s.log.ErrorContext(ctx, "parse signing key failed", "error", err)
+		return nil, "", service.ErrInternal
+	}
+
+	return privKey, row.Kid, nil
+}
+
+func (s *authService) txError(ctx context.Context, span trace.Span, err error, msg string) error {
+	span.RecordError(err)
+	if !service.IsError(err) {
+		span.SetStatus(codes.Error, msg)
+		s.log.ErrorContext(ctx, msg, "error", err)
+		return service.ErrInternal
+	}
+	span.SetStatus(codes.Error, err.Error())
+	return err
+}
+
 func selectActiveOrganization(
-	memberships []organizationmemberservice.ListByUserOutput,
+	memberships []repository.ListUserMembershipsRow,
 	preferred *uuid.UUID,
-) organizationmemberservice.ListByUserOutput {
+) repository.ListUserMembershipsRow {
 	if preferred != nil {
 		for _, m := range memberships {
 			if m.OrganizationID == *preferred {

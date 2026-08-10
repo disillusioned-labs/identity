@@ -19,7 +19,7 @@ make migrate-new name=foo   # create a new goose migration in db/migrations/
 make vuln                   # govulncheck at the pinned version
 ```
 
-Run a single test: `go test -run TestName ./internal/service/user/`.
+Run a single test: `go test -run TestName ./internal/service/auth/`.
 Integration tests live behind the `integration` build tag so plain `go test ./...` stays Docker-free.
 
 `docker-compose.yml` describes what a server runs, and maps Postgres to host 5433 and Redis to 6380 so a containerised pair never collides with a native one - never change those mappings.
@@ -34,39 +34,46 @@ Tool versions (goose, sqlc, govulncheck) are pinned as Makefile variables, **not
 
 ## Architecture
 
-Request flow: `internal/handler/<resource>` → `internal/service/<resource>` → `internal/repository` (sqlc/pgx), with the service consulting Redis (cache-aside) before Postgres on reads.
+Request flow: `internal/handler/<resource>` → `internal/service/<resource>` → `internal/repository` (sqlc/pgx). The graph is **flat and exactly three layers deep**: a service calls the repository and nothing else. There is no service→service edge anywhere, and adding one is the single change most likely to be rejected in review - see the invariant below for why.
 
-The cache-aside in `service/user` **demonstrates the pattern; it is not a recommendation to cache every read.** A primary-key lookup is sub-millisecond in Postgres - caching it buys no latency and adds an invalidation surface. When copying the vertical, delete the four `s.cache != nil` blocks unless the new resource has measured read pressure.
+**The unit of a service is a use case, not a table.** A service package is named after the endpoint group it serves (`service/auth` backs `handler/auth`), and it reaches every table that use case touches. `Register` writes `users`, `organizations`, `organization_members` and then updates `users.last_active_organization_id`, all inside one `ExecTx` - so `authService` issues all four queries itself, straight against `repository.Querier`. It does not ask a `userService` to create the user for it, because that is exactly the edge the invariant forbids.
 
-**Adding a resource** is a copy-paste of the `user` vertical - it exists as the template:
+The price is duplication, and it is worth naming out loud: the day a standalone user endpoint arrives, `CreateUser` will be called from `service/user` as well as `service/auth`, and the same row will be mapped to a service type in two places. **That is bought deliberately, not overlooked.** What it buys is a dependency graph with no internal edges to reason about and a transaction boundary you can see in one file - the alternative is a mesh where "who owns this transaction" is answered by reading four packages, and where a shared helper quietly grows a second caller with different transactional needs. When you find yourself copying a mapping for the second time, copy it. Extract only on the third, and extract it as a pure function over a sqlc row - never as a service one service calls.
+
+**Adding a resource:**
 1. `make migrate-new` → write SQL in `db/migrations/` (goose format, up+down in one file)
 2. Add queries in `db/queries/` → `make sqlc` (sqlc reads the migrations dir as schema)
-3. Copy `internal/service/user/` and `internal/handler/auth/`, adapt - including the names: `<Resource>Service` / `New<Resource>Service` / `<resource>Service` (see Conventions)
+3. Add `internal/service/<usecase>/` (`model.go` + `service.go`) and `internal/handler/<usecase>/`, using `auth` as the shape reference - including the names: `<Resource>Service` / `New<Resource>Service` / `<resource>Service` (see Conventions). Query the tables the use case needs directly; do not reach for another service.
 4. Wire it in `internal/app/di.go` (add construction) and `internal/server/server.go` (add a `Deps` field + `r.Mount`). `app.go`, `cmd/` and `internal/platform/` never change.
 
 Adding a resource must not require editing `internal/handler/respond.go` or `internal/service/errors.go`. If it does, the error model has regressed - see below.
 
 **Non-negotiable invariants:**
+- **A service never calls another service.** `internal/service/<x>` may import `internal/repository` and `internal/platform/...`, never `internal/service/<y>`. The dependency graph stays flat - handler → service → repository - so the only question a reader ever has to answer about a call is "which tables does this touch", not "which service touches which service". A use case that spans several tables issues all of those queries itself.
+- **Services take `querier repository.Querier` as a method parameter; they do not hold a repository field.** Every method that could ever participate in a caller's transaction takes the querier it should run on. Only the service that *owns* a transaction keeps `repo repository.Store` as a field, and it uses it for one thing: calling `ExecTx` and handing the resulting `Querier` down. Because `Store` embeds `Querier`, an unenlisted call is just `s.repo` passed as the parameter - there is no second code path and no "transactional variant" of any method.
+
+  This is not theoretical tidiness; it is a bill this repo already paid. `jwtService` originally stored a `repo Store` field and ran its own queries against it. That was fine until refresh-token rotation arrived, where revoking the old token and inserting the new one must be atomic: the stored field bound every query to the pool, so the operation could not join the caller's transaction, and fixing it meant changing the interface, the constructor and every call site at once. A method parameter would have cost nothing up front and made rotation a non-event. Take the parameter from the first method, before you know which caller will need a transaction.
 - Every HTTP response goes through `internal/handler/respond.go` (`OK`/`OKList`/`WriteError`/`WriteServiceError`). Never write to the ResponseWriter directly; never use `http.Error`. Envelope shape: `{"data": ...}` / `{"error": {"code", "message", "fields"?}}` with machine-readable codes.
 - `WriteJSON` marshals into a buffer *before* writing any header. Never encode straight to the ResponseWriter: that commits a 200 first, so a mid-stream marshal failure would ship a truncated body under a success status.
 - **Domain errors are self-describing.** `service.Error` carries `Code`, `Status` and `Message`; `WriteServiceError` reads those via `errors.As` and therefore contains *no* per-resource cases. New resource-specific errors are declared with `service.NewError(...)` in that resource's own package - never by adding a case to the shared handler switch. Services wrap with `%w` so the mapping survives.
 - Context errors are checked **before** the domain error in `WriteServiceError`: an expired request is a 504 and a cancelled one writes nothing, because a timeout is a transport outcome and not a server fault. `chimw.Timeout` only cancels the context - this mapping is what actually produces the 504.
 - Request decoding goes through `handler.DecodeValid[T]` - it enforces the 1 MiB body cap, unknown-field rejection, and `validate` struct tags.
 - List endpoints read pagination through `handler.DecodePage`, which **rejects** a malformed or out-of-range `limit`/`offset` with 422 instead of silently clamping. Silent clamping hands the client a page it never asked for and contradicts `DecodeValid`'s strictness on the body path.
-- Writes that report rows-affected map 0 rows to `service.ErrNotFound` (see `DeleteUser :execrows`) rather than answering a silent 204.
+- Writes that report rows-affected map 0 rows to `service.ErrNotFound` (see `SetLastActiveOrganization :execrows` and `RevokeRefreshToken :execrows`) rather than answering a silent 204.
 - Config: every knob is an environment variable + a default **and validation** in `internal/config`, documented in `.env.example`. Never read env vars directly outside that package. `validate()` accumulates every problem with `errors.Join` so one boot surfaces the whole list. Two CI tests keep `.env.example` honest: it must produce a valid config, and every key in it must be one the app actually reads (a typo there is invisible at runtime - the setting is simply ignored forever).
 - `config.Load()` is called in `cmd/api/main.go`, not in `app.Run` - `Run(cfg *config.Config)` takes a ready config so it stays callable from a test or a second binary with a config built in code, no file and no environment.
 - Anything holding a secret implements `slog.LogValuer` (`PostgresConfig`, `RedisConfig`). `log.Info("...", "postgres", cfg.Postgres)` must never be able to print a password.
 - **`internal/platform/` holds generic infrastructure adapters** (`postgres`, `redis`, `cache`, `telemetry`). They take plain values plus functional options and know nothing about this application, so tests and tools can construct them without a `config.Config`. **This is enforced, not documented**: a `depguard` rule fails the build if anything under `internal/platform/` imports `github.com/disillusioned-labs/identity/internal`. That rule is the whole justification for the directory - without it, `platform/` becomes the dumping ground every such directory turns into. Don't add something there that needs app knowledge; resolve the decision in `app.go` and pass it down as data.
+- **`internal/platform/jwt` is a component, not a service, and that is why it is not a hole in the no-service-calls-a-service rule.** It is pure cryptography: sign an RS256 JWT, parse an RSA private key from PEM, generate a refresh token and hash it. It knows nothing about users, organizations or this application, and - like everything under `internal/platform/` - imports nothing from `internal/`, which the existing depguard rule already enforces. The signing key is **loaded from the database by the service** and handed to `platform/jwt` as an `*rsa.PrivateKey`; the package never sees a `Querier` and never touches the repository. Read the dependency direction as the test: a service calling `platform/jwt` is a service calling a library, the same as calling `bcrypt`. If something you are about to put there needs to read a row, it is not a component - it belongs in the service that owns the use case.
 - Only the composition layer imports `internal/config`: `cmd/api` (loads it), `app/` (unpacks it) and `server/` (app-specific by nature). A second `depguard` rule denies `internal/config` to `handler/`, `service/` and `repository/`. Policy decisions (is tracing on, is Redis required) are resolved in `app.go` and passed down as data, not re-read from config downstream.
 - Cache is nilable by design: `cache.Cache` interface, nil means run uncached (redis.mode=disabled/optional). Keep nil checks when touching services; never pass a typed-nil `*cache.Cache` (see the `setupRedis` comment in app.go).
-- Transactions: read-modify-write goes through `repository.Store.ExecTx` with `FOR UPDATE` (see user Update).
+- Transactions: any use case that writes more than one row goes through `repository.Store.ExecTx`, and read-modify-write takes `FOR UPDATE` inside it. The `ExecTx` call sits in the service that owns the use case (`authService.Register`, `authService.Refresh`) - never in a helper a second service also calls, because a nested or reused transaction owner is how two callers end up with different atomicity guarantees from the same code.
 - `internal/repository` is sqlc-generated except `store.go` - never hand-edit generated files; CI's `sqlc diff` job fails on drift.
 
 **Deliberate decisions - do not "fix" these:**
 - No RealIP middleware: forwarded headers are spoofable; rate limiting keys off the TCP peer (`RemoteAddr`). Deployments behind a trusted proxy add their own middleware.
 - The rate limiter counts **in-process**: N replicas allow N×`ratelimit.requests`. That is documented, not overlooked - swap in `httprate-redis` before treating it as a hard global cap.
-- No auth, swagger, mock generators, CORS - out of scope for this boilerplate by decision.
+- No swagger, mock generators, CORS - out of scope by decision. (Auth is no longer on that list: it is this service's reason to exist.)
 - The app is intentionally NOT in docker-compose (infra only); it runs natively for fast iteration. `Dockerfile` is the production image.
 - goose over golang-migrate; migrations are embedded (`db/migrations/migrations.go`) and auto-applied at boot when `POSTGRES_MIGRATE=true` - which `.env.example` sets for dev only. The default is off, so production migrates from CI unless explicitly told otherwise.
 - Offset pagination is the default because it is what a fresh project needs. It degrades past roughly 10k rows - switch that resource to keyset pagination then; `handler.Page.Meta()` is the one place the response contract is built.
@@ -111,18 +118,24 @@ Build provenance reaches Prometheus as `target_info{service_version,vcs_ref_head
 ## Conventions
 
 - Comments explain *why* or a contract, never *what*. Every exported symbol has a doc comment (revive enforces this).
-- **Service naming is resource-qualified, not package-relative.** Each `internal/service/<resource>` package exports `<Resource>Service` (interface) and `New<Resource>Service` (constructor), and keeps the implementation unexported as `<resource>Service`:
+- **A service package is named after its use case, and its name is resource-qualified, not package-relative.** Each `internal/service/<name>` package exports `<Name>Service` (interface) and `New<Name>Service` (constructor), and keeps the implementation unexported as `<name>Service`:
 
 ```go
-package user
+package auth
 
-type UserService interface { ... }
-type userService struct { ... }
-func NewUserService(log *slog.Logger) UserService { return &userService{...} }
-func (s *userService) Create(...) (User, error)
+type AuthService interface { ... }
+type authService struct {
+    repo repository.Store // only because this service owns transactions
+    ...
+}
+func NewAuthService(repo repository.Store, log *slog.Logger) AuthService { return &authService{...} }
+func (s *authService) Register(ctx context.Context, input RegisterInput) (RegisterOutput, error)
 ```
 
-  Call sites read `userservice.NewUserService(log)` and `Deps{Auth: authservice.AuthService}`. The name repeats what the package already says, which is the point: at the composition layer (`di.go`, `server.go`) and in `Deps` fields, half a dozen imports are aliased `*service` and a bare `Service` says nothing about which one. The receiver name follows the same rule so a stack trace or a grep for `authService` finds one thing.
+  Call sites read `authservice.NewAuthService(repo, log)` and `Deps{Auth: authservice.AuthService}`. The name repeats what the package already says, which is the point: at the composition layer (`di.go`, `server.go`) and in `Deps` fields, half a dozen imports are aliased `*service` and a bare `Service` says nothing about which one. The receiver name follows the same rule so a stack trace or a grep for `authService` finds one thing.
+
+  Note what the name does *not* promise: `<name>` is the use case the package serves, not the table it writes. `authService` owns four tables and there is no rule that a table gets a service, or that a service gets only one table. A package appears when an endpoint group needs one - a table on its own is not a reason to create one.
+- **Constructor parameters tell you whether a service owns transactions.** A service that runs an `ExecTx` takes `repository.Store` and stores it; a service that only ever runs inside somebody else's transaction takes no repository at all and receives a `Querier` per method. Reading the constructor in `di.go` should be enough to know which kind you are looking at.
 
 - **No `var _ Service = (*svc)(nil)` assertions in service packages.** The constructor returns the interface, so the compiler already rejects an incomplete implementation at the `return &userService{...}` line. Adding the assertion only matters if a constructor returns the concrete type - which this codebase does not do.
 - **A service package is exactly two files: `model.go` (types) and `service.go` (interface + implementation).** There is no `input.go`/`output.go` split - one method's parameter and return type are read together far more often than all the inputs are read together. Split further only past ~200 lines.
@@ -130,5 +143,5 @@ func (s *userService) Create(...) (User, error)
 - **Service types carry no struct tags.** `json` and `validate` tags live on `handler/<resource>`'s `Request`/`Response` types, `pgtype` on sqlc's generated rows. Three shapes, three reasons: the wire contract in `docs/04-api-contract.md` must stay stable while the domain moves, gRPC arrives in M3 as a second consumer, and the snapshot pattern is nested in JSON but flat in the database (`docs/05-schema.md`). The handler maps between them (`toRegisterResponse` in `handler/auth/response.go`) - a service must never build a response type.
 - Import order: stdlib / third-party / `github.com/disillusioned-labs/identity/...` last, grouped by `gofumpt.module-path` and `goimports.local-prefixes` in `.golangci.yml`.
 - Line endings are LF everywhere (`.gitattributes` enforces); CRLF breaks gofumpt.
-- Tests use hand-written fakes (`fakeStore`, `mockUserService`, `stubUserService` patterns) - no mock generation tooling.
+- Tests use hand-written fakes (`fakeStore`, `fakeQuerier`, `stubAuthService` patterns) - no mock generation tooling. The flat graph makes these small: a service test fakes `repository.Querier` and nothing else, because there is no other collaborator to fake.
 - `internal/repository/integration_test.go` is the template integration test: testcontainers Postgres + real goose migrations + full CRUD.
