@@ -40,6 +40,20 @@ func newOrganizationResponse(o authservice.OrganizationOutput) OrganizationRespo
 	}
 }
 
+type TokensResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+}
+
+func toRefreshResponse(out authservice.RefreshOutput) TokensResponse {
+	return TokensResponse{
+		AccessToken:  out.Tokens.AccessToken,
+		RefreshToken: out.Tokens.RefreshToken,
+		ExpiresIn:    out.Tokens.ExpiresIn,
+	}
+}
+
 func toRegisterResponse(out authservice.RegisterOutput) SessionResponse {
 	return SessionResponse{
 		AccessToken:  out.Tokens.AccessToken,

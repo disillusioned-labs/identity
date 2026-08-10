@@ -20,6 +20,25 @@ type IssueOutput struct {
 	ExpiresIn    int
 }
 
+type LookupRefreshTokenInput struct {
+	RefreshToken string
+}
+
+type LookupRefreshTokenOutput struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+}
+
+type RevokeRefreshTokenInput struct {
+	ID uuid.UUID
+}
+
+type RevokeAllUserRefreshTokensInput struct {
+	UserID uuid.UUID
+}
+
 type Claims struct {
 	Subject   string
 	OrgID     string

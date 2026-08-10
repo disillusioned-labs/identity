@@ -29,6 +29,16 @@ type LoginOutput struct {
 	Tokens       TokensOutput
 }
 
+type RefreshInput struct {
+	RefreshToken string
+	UserAgent    string
+	IPAddress    string
+}
+
+type RefreshOutput struct {
+	Tokens TokensOutput
+}
+
 type UserOutput struct {
 	ID    uuid.UUID
 	Name  string

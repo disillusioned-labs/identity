@@ -76,6 +76,29 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	handler.OK(w, http.StatusOK, toLoginResponse(output))
 }
 
+func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.refresh")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	req, ok := handler.DecodeValid[RefreshRequest](w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "decode/validate failed")
+		return
+	}
+
+	output, err := h.svc.Refresh(ctx, authservice.RefreshInput{
+		RefreshToken: strings.TrimSpace(req.RefreshToken),
+		UserAgent:    r.UserAgent(),
+		IPAddress:    clientIP(r),
+	})
+	if err != nil {
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+	handler.OK(w, http.StatusOK, toRefreshResponse(output))
+}
+
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

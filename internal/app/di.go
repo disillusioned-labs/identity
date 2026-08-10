@@ -27,7 +27,6 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 	}
 
 	jwt := jwtservice.NewJWTService(
-		repo,
 		masterKey,
 		authCfg.AccessTokenTTL,
 		authCfg.RefreshTokenTTL,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
@@ -24,6 +25,7 @@ import (
 type AuthService interface {
 	Register(ctx context.Context, input RegisterInput) (RegisterOutput, error)
 	Login(ctx context.Context, input LoginInput) (LoginOutput, error)
+	Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error)
 }
 
 type authService struct {
@@ -124,7 +126,7 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 		attribute.String("organization.id", createdOrg.ID.String()),
 	)
 
-	tokens, err := s.jwt.Issue(ctx, jwtservice.IssueInput{
+	tokens, err := s.jwt.Issue(ctx, s.repo, jwtservice.IssueInput{
 		UserID:    createdUser.ID,
 		OrgID:     createdOrg.ID,
 		Role:      constant.RoleOwner,
@@ -211,7 +213,7 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		}
 	}
 
-	tokens, err := s.jwt.Issue(ctx, jwtservice.IssueInput{
+	tokens, err := s.jwt.Issue(ctx, s.repo, jwtservice.IssueInput{
 		UserID:    user.ID,
 		OrgID:     active.OrganizationID,
 		Role:      active.Role,
@@ -237,6 +239,111 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 			Type: active.OrganizationType,
 			Role: active.Role,
 		},
+		Tokens: TokensOutput{
+			AccessToken:  tokens.AccessToken,
+			RefreshToken: tokens.RefreshToken,
+			ExpiresIn:    tokens.ExpiresIn,
+		},
+	}, nil
+}
+
+func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error) {
+	ctx, span := s.tracer.Start(ctx, "AuthService.Refresh")
+	defer span.End()
+
+	stored, err := s.jwt.LookupRefreshToken(ctx, s.repo, jwtservice.LookupRefreshTokenInput{
+		RefreshToken: input.RefreshToken,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			span.SetStatus(codes.Error, "refresh token not found")
+			return RefreshOutput{}, service.ErrUnauthenticated
+		}
+		span.RecordError(err)
+		return RefreshOutput{}, err
+	}
+
+	if stored.RevokedAt != nil {
+		s.log.WarnContext(ctx, "revoked refresh token replayed, revoking every session",
+			"user_id", stored.UserID)
+		if err := s.jwt.RevokeAllUserRefreshTokens(ctx, s.repo, jwtservice.RevokeAllUserRefreshTokensInput{
+			UserID: stored.UserID,
+		}); err != nil {
+			span.RecordError(err)
+			return RefreshOutput{}, err
+		}
+		span.SetStatus(codes.Error, "refresh token reuse detected")
+		return RefreshOutput{}, service.ErrUnauthenticated
+	}
+
+	if !stored.ExpiresAt.After(time.Now()) {
+		span.SetStatus(codes.Error, "refresh token expired")
+		return RefreshOutput{}, service.ErrUnauthenticated
+	}
+
+	var tokens jwtservice.IssueOutput
+
+	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
+		user, err := s.users.GetByID(ctx, querier, userservice.GetByIDInput{ID: stored.UserID})
+		if err != nil {
+			if errors.Is(err, service.ErrNotFound) {
+				return service.ErrUnauthenticated
+			}
+			return err
+		}
+
+		if user.LastActiveOrganizationID == nil {
+			return service.ErrUnauthenticated
+		}
+
+		membership, err := s.members.Get(ctx, querier, organizationmemberservice.GetInput{
+			UserID:         user.ID,
+			OrganizationID: *user.LastActiveOrganizationID,
+		})
+		if err != nil {
+			if errors.Is(err, service.ErrNotFound) {
+				return service.ErrUnauthenticated
+			}
+			return err
+		}
+
+		if err := s.jwt.RevokeRefreshToken(ctx, querier, jwtservice.RevokeRefreshTokenInput{ID: stored.ID}); err != nil {
+			if errors.Is(err, service.ErrNotFound) {
+				return service.ErrUnauthenticated
+			}
+			return err
+		}
+
+		issued, err := s.jwt.Issue(ctx, querier, jwtservice.IssueInput{
+			UserID:    user.ID,
+			OrgID:     membership.OrganizationID,
+			Role:      membership.Role,
+			UserAgent: input.UserAgent,
+			IPAddress: input.IPAddress,
+		})
+		if err != nil {
+			return err
+		}
+
+		span.SetAttributes(
+			attribute.String("user.id", user.ID.String()),
+			attribute.String("organization.id", membership.OrganizationID.String()),
+		)
+		tokens = issued
+		return nil
+	})
+	if err != nil {
+		if !service.IsError(err) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "refresh transaction failed")
+			s.log.ErrorContext(ctx, "refresh transaction failed", "error", err)
+			return RefreshOutput{}, service.ErrInternal
+		}
+		span.SetStatus(codes.Error, err.Error())
+		return RefreshOutput{}, err
+	}
+
+	return RefreshOutput{
 		Tokens: TokensOutput{
 			AccessToken:  tokens.AccessToken,
 			RefreshToken: tokens.RefreshToken,

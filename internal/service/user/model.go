@@ -26,6 +26,17 @@ type GetByEmailOutput struct {
 	LastActiveOrganizationID *uuid.UUID
 }
 
+type GetByIDInput struct {
+	ID uuid.UUID
+}
+
+type GetByIDOutput struct {
+	ID                       uuid.UUID
+	Name                     string
+	Email                    string
+	LastActiveOrganizationID *uuid.UUID
+}
+
 type SetLastActiveOrganizationInput struct {
 	UserID         uuid.UUID
 	OrganizationID uuid.UUID

@@ -26,11 +26,13 @@ import (
 )
 
 type JWTService interface {
-	Issue(ctx context.Context, input IssueInput) (IssueOutput, error)
+	Issue(ctx context.Context, querier repository.Querier, input IssueInput) (IssueOutput, error)
+	LookupRefreshToken(ctx context.Context, querier repository.Querier, input LookupRefreshTokenInput) (LookupRefreshTokenOutput, error)
+	RevokeRefreshToken(ctx context.Context, querier repository.Querier, input RevokeRefreshTokenInput) error
+	RevokeAllUserRefreshTokens(ctx context.Context, querier repository.Querier, input RevokeAllUserRefreshTokensInput) error
 }
 
 type jwtService struct {
-	repo            repository.Store
 	masterKey       []byte
 	accessTokenTTL  time.Duration
 	refreshTokenTTL time.Duration
@@ -40,7 +42,6 @@ type jwtService struct {
 }
 
 func NewJWTService(
-	repo repository.Store,
 	masterKey []byte,
 	accessTokenTTL time.Duration,
 	refreshTokenTTL time.Duration,
@@ -48,7 +49,6 @@ func NewJWTService(
 	log *slog.Logger,
 ) JWTService {
 	return &jwtService{
-		repo:            repo,
 		masterKey:       masterKey,
 		accessTokenTTL:  accessTokenTTL,
 		refreshTokenTTL: refreshTokenTTL,
@@ -64,11 +64,11 @@ type jwtClaims struct {
 	jwt.RegisteredClaims
 }
 
-func (s *jwtService) Issue(ctx context.Context, input IssueInput) (IssueOutput, error) {
+func (s *jwtService) Issue(ctx context.Context, querier repository.Querier, input IssueInput) (IssueOutput, error) {
 	ctx, span := s.tracer.Start(ctx, "JWTService.Issue")
 	defer span.End()
 
-	privKey, kid, err := s.loadSigningKey(ctx)
+	privKey, kid, err := s.loadSigningKey(ctx, querier)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "load signing key failed")
@@ -120,7 +120,7 @@ func (s *jwtService) Issue(ctx context.Context, input IssueInput) (IssueOutput, 
 		ua = pgtype.Text{String: input.UserAgent, Valid: true}
 	}
 
-	_, err = s.repo.CreateRefreshToken(ctx, repository.CreateRefreshTokenParams{
+	_, err = querier.CreateRefreshToken(ctx, repository.CreateRefreshTokenParams{
 		UserID:    input.UserID,
 		TokenHash: hashToken(refreshToken),
 		UserAgent: ua,
@@ -141,10 +141,69 @@ func (s *jwtService) Issue(ctx context.Context, input IssueInput) (IssueOutput, 
 	}, nil
 }
 
-func (s *jwtService) loadSigningKey(ctx context.Context) (*rsa.PrivateKey, string, error) {
+func (s *jwtService) LookupRefreshToken(ctx context.Context, querier repository.Querier, input LookupRefreshTokenInput) (LookupRefreshTokenOutput, error) {
+	ctx, span := s.tracer.Start(ctx, "JWTService.LookupRefreshToken")
+	defer span.End()
+
+	row, err := querier.GetRefreshTokenByHash(ctx, hashToken(input.RefreshToken))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "refresh token not found")
+			return LookupRefreshTokenOutput{}, service.ErrNotFound
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "lookup refresh token failed")
+		s.log.ErrorContext(ctx, "lookup refresh token failed", "error", err)
+		return LookupRefreshTokenOutput{}, service.ErrInternal
+	}
+
+	out := LookupRefreshTokenOutput{
+		ID:        row.ID,
+		UserID:    row.UserID,
+		ExpiresAt: row.ExpiresAt,
+	}
+	if row.RevokedAt.Valid {
+		revokedAt := row.RevokedAt.Time
+		out.RevokedAt = &revokedAt
+	}
+	return out, nil
+}
+
+func (s *jwtService) RevokeRefreshToken(ctx context.Context, querier repository.Querier, input RevokeRefreshTokenInput) error {
+	ctx, span := s.tracer.Start(ctx, "JWTService.RevokeRefreshToken")
+	defer span.End()
+
+	rows, err := querier.RevokeRefreshToken(ctx, input.ID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "revoke refresh token failed")
+		s.log.ErrorContext(ctx, "revoke refresh token failed", "error", err)
+		return service.ErrInternal
+	}
+	if rows == 0 {
+		span.SetStatus(codes.Error, "refresh token already revoked")
+		return service.ErrNotFound
+	}
+	return nil
+}
+
+func (s *jwtService) RevokeAllUserRefreshTokens(ctx context.Context, querier repository.Querier, input RevokeAllUserRefreshTokensInput) error {
+	ctx, span := s.tracer.Start(ctx, "JWTService.RevokeAllUserRefreshTokens")
+	defer span.End()
+
+	if _, err := querier.RevokeAllUserRefreshTokens(ctx, input.UserID); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "revoke all user refresh tokens failed")
+		s.log.ErrorContext(ctx, "revoke all user refresh tokens failed", "error", err)
+		return service.ErrInternal
+	}
+	return nil
+}
+
+func (s *jwtService) loadSigningKey(ctx context.Context, querier repository.Querier) (*rsa.PrivateKey, string, error) {
 	span := trace.SpanFromContext(ctx)
 
-	row, err := s.repo.GetActiveSigningKey(ctx)
+	row, err := querier.GetActiveSigningKey(ctx)
 	if err != nil {
 		span.RecordError(err)
 		if errors.Is(err, pgx.ErrNoRows) {

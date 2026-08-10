@@ -70,6 +70,32 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEm
 	return i, err
 }
 
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, email, name, last_active_organization_id
+FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+`
+
+type GetUserByIDRow struct {
+	ID                       uuid.UUID  `json:"id"`
+	Email                    string     `json:"email"`
+	Name                     string     `json:"name"`
+	LastActiveOrganizationID *uuid.UUID `json:"last_active_organization_id"`
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error) {
+	row := q.db.QueryRow(ctx, getUserByID, id)
+	var i GetUserByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.LastActiveOrganizationID,
+	)
+	return i, err
+}
+
 const setLastActiveOrganization = `-- name: SetLastActiveOrganization :execrows
 UPDATE users
 SET last_active_organization_id = $2

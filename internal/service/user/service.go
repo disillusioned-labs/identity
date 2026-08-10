@@ -17,6 +17,7 @@ import (
 type UserService interface {
 	Create(ctx context.Context, querier repository.Querier, input CreateInput) (CreateOutput, error)
 	GetByEmail(ctx context.Context, querier repository.Querier, input GetByEmailInput) (GetByEmailOutput, error)
+	GetByID(ctx context.Context, querier repository.Querier, input GetByIDInput) (GetByIDOutput, error)
 	SetLastActiveOrganization(ctx context.Context, querier repository.Querier, input SetLastActiveOrganizationInput) error
 }
 
@@ -77,6 +78,30 @@ func (s *userService) GetByEmail(ctx context.Context, querier repository.Querier
 		Name:                     row.Name,
 		Email:                    row.Email,
 		HashedPassword:           row.Password,
+		LastActiveOrganizationID: row.LastActiveOrganizationID,
+	}, nil
+}
+
+func (s *userService) GetByID(ctx context.Context, querier repository.Querier, input GetByIDInput) (GetByIDOutput, error) {
+	ctx, span := s.tracer.Start(ctx, "UserService.GetByID")
+	defer span.End()
+
+	row, err := querier.GetUserByID(ctx, input.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "user not found")
+			return GetByIDOutput{}, service.ErrNotFound
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get user by id failed")
+		s.log.ErrorContext(ctx, "get user by id failed", "error", err)
+		return GetByIDOutput{}, service.ErrInternal
+	}
+
+	return GetByIDOutput{
+		ID:                       row.ID,
+		Name:                     row.Name,
+		Email:                    row.Email,
 		LastActiveOrganizationID: row.LastActiveOrganizationID,
 	}, nil
 }
