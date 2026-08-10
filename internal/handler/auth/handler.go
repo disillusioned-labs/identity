@@ -5,21 +5,22 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/disillusioned-labs/identity/internal/handler"
-	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+
+	"github.com/disillusioned-labs/identity/internal/handler"
+	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
 )
 
 var tracer = otel.Tracer("handler/auth")
 
 type Handler struct {
-	svc authservice.Service
+	svc authservice.AuthService
 	log *slog.Logger
 }
 
-func NewHandler(svc authservice.Service, log *slog.Logger) *Handler {
+func NewHandler(svc authservice.AuthService, log *slog.Logger) *Handler {
 	return &Handler{svc: svc, log: log}
 }
 

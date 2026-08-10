@@ -23,8 +23,6 @@ type store struct {
 	pool *pgxpool.Pool
 }
 
-var _ Store = (*store)(nil)
-
 // NewStore builds a Store backed by pool.
 func NewStore(pool *pgxpool.Pool) Store {
 	return &store{Queries: New(pool), pool: pool}

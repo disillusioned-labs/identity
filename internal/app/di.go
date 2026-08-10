@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/disillusioned-labs/identity/internal/config"
@@ -17,12 +18,15 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, svcCache cache.Cache, authCfg config.AuthConfig, log *slog.Logger) server.Deps {
+func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ cache.Cache, authCfg config.AuthConfig, log *slog.Logger) (server.Deps, error) {
 	repo := repository.NewStore(pool)
 
-	masterKey, _ := authCfg.MasterKeyBytes()
+	masterKey, err := authCfg.MasterKeyBytes()
+	if err != nil {
+		return server.Deps{}, fmt.Errorf("decode auth master key: %w", err)
+	}
 
-	jwt := jwtservice.New(
+	jwt := jwtservice.NewJWTService(
 		repo,
 		masterKey,
 		authCfg.AccessTokenTTL,
@@ -31,16 +35,16 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, svcC
 		log,
 	)
 
-	users := userservice.New(log)
-	orgs := organizationservice.New(log)
-	members := organizationmemberservice.New(log)
+	users := userservice.NewUserService(log)
+	orgs := organizationservice.NewOrganizationService(log)
+	members := organizationmemberservice.NewOrganizationMemberService(log)
 
-	auth := authservice.New(repo, users, orgs, members, jwt, log)
+	auth := authservice.NewAuthService(repo, users, orgs, members, jwt, log)
 
 	return server.Deps{
 		Auth:          auth,
 		Pool:          pool,
 		Redis:         rdb,
 		RedisRequired: redisRequired,
-	}
+	}, nil
 }

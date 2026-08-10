@@ -102,7 +102,11 @@ func Run(cfg *config.Config) error {
 	defer closeRedis()
 
 	redisRequired := cfg.Redis.Mode == config.RedisModeRequired
-	srv := server.New(cfg, log, buildDeps(pool, rdb, redisRequired, svcCache, cfg.Auth, log))
+	deps, err := buildDeps(pool, rdb, redisRequired, svcCache, cfg.Auth, log)
+	if err != nil {
+		return fmt.Errorf("build dependencies: %w", err)
+	}
+	srv := server.New(cfg, log, deps)
 	pprofSrv := server.NewPprofServer(cfg.Pprof.Enabled, cfg.Pprof.Port, log)
 
 	// Each listener runs in the group; the first hard failure cancels runCtx

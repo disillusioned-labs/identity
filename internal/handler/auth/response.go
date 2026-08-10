@@ -11,13 +11,13 @@ type RegisterResponse struct {
 }
 
 type RegisterUserResponse struct {
-	Id    string `json:"id"`
+	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
 }
 
 type RegisterOrganizationResponse struct {
-	Id   string `json:"id"`
+	ID   string `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
 	Role string `json:"role"`
@@ -29,12 +29,12 @@ func toRegisterResponse(out authservice.RegisterOutput) RegisterResponse {
 		RefreshToken: out.Tokens.RefreshToken,
 		ExpiresIn:    out.Tokens.ExpiresIn,
 		User: RegisterUserResponse{
-			Id:    out.User.ID.String(),
+			ID:    out.User.ID.String(),
 			Name:  out.User.Name,
 			Email: out.User.Email,
 		},
 		Organization: RegisterOrganizationResponse{
-			Id:   out.Organization.ID.String(),
+			ID:   out.Organization.ID.String(),
 			Name: out.Organization.Name,
 			Type: out.Organization.Type,
 			Role: out.Organization.Role,

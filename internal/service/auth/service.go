@@ -19,24 +19,29 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-type Service interface {
+type AuthService interface {
 	Register(ctx context.Context, input RegisterInput) (RegisterOutput, error)
 }
 
-type svc struct {
+type authService struct {
 	repo    repository.Store
-	users   userservice.Service
-	orgs    organizationservice.Service
-	members organizationmemberservice.Service
-	jwt     jwtservice.Service
+	users   userservice.UserService
+	orgs    organizationservice.OrganizationService
+	members organizationmemberservice.OrganizationMemberService
+	jwt     jwtservice.JWTService
 	log     *slog.Logger
 	tracer  trace.Tracer
 }
 
-var _ Service = (*svc)(nil)
-
-func New(repo repository.Store, users userservice.Service, orgs organizationservice.Service, members organizationmemberservice.Service, jwt jwtservice.Service, log *slog.Logger) Service {
-	return &svc{
+func NewAuthService(
+	repo repository.Store,
+	users userservice.UserService,
+	orgs organizationservice.OrganizationService,
+	members organizationmemberservice.OrganizationMemberService,
+	jwt jwtservice.JWTService,
+	log *slog.Logger,
+) AuthService {
+	return &authService{
 		repo:    repo,
 		users:   users,
 		orgs:    orgs,
@@ -47,10 +52,8 @@ func New(repo repository.Store, users userservice.Service, orgs organizationserv
 	}
 }
 
-func (s *svc) Register(ctx context.Context, input RegisterInput) (RegisterOutput, error) {
-	ctx, span := s.tracer.Start(ctx, "AuthService.Register",
-		trace.WithAttributes(attribute.String("user.email", input.Email)),
-	)
+func (s *authService) Register(ctx context.Context, input RegisterInput) (RegisterOutput, error) {
+	ctx, span := s.tracer.Start(ctx, "AuthService.Register")
 	defer span.End()
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
@@ -61,8 +64,8 @@ func (s *svc) Register(ctx context.Context, input RegisterInput) (RegisterOutput
 		return RegisterOutput{}, service.ErrInternal
 	}
 
-	var createdUser userservice.User
-	var createdOrg organizationservice.Organization
+	var createdUser userservice.CreateOutput
+	var createdOrg organizationservice.CreateOutput
 
 	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
 		u, err := s.users.Create(ctx, querier, userservice.CreateInput{
@@ -124,18 +127,18 @@ func (s *svc) Register(ctx context.Context, input RegisterInput) (RegisterOutput
 	}
 
 	return RegisterOutput{
-		User: User{
+		User: UserOutput{
 			ID:    createdUser.ID,
 			Name:  createdUser.Name,
 			Email: createdUser.Email,
 		},
-		Organization: Organization{
+		Organization: OrganizationOutput{
 			ID:   createdOrg.ID,
 			Name: createdOrg.Name,
 			Type: createdOrg.Type,
 			Role: constant.RoleOwner,
 		},
-		Tokens: Tokens{
+		Tokens: TokensOutput{
 			AccessToken:  tokens.AccessToken,
 			RefreshToken: tokens.RefreshToken,
 			ExpiresIn:    tokens.ExpiresIn,

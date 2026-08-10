@@ -23,7 +23,7 @@ import (
 )
 
 // stubAuthService lets the router build without a real service.
-type stubAuthService struct{ authservice.Service }
+type stubAuthService struct{ authservice.AuthService }
 
 // newTestServer builds the real router allowing 1 request per window, so the
 // second request is throttled.

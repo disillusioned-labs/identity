@@ -4,32 +4,31 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/identity/internal/service"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
 )
 
-type Service interface {
-	Create(ctx context.Context, querier repository.Querier, input CreateInput) (Organization, error)
+type OrganizationService interface {
+	Create(ctx context.Context, querier repository.Querier, input CreateInput) (CreateOutput, error)
 }
 
-type svc struct {
+type organizationService struct {
 	log    *slog.Logger
 	tracer trace.Tracer
 }
 
-var _ Service = (*svc)(nil)
-
-func New(log *slog.Logger) Service {
-	return &svc{
+func NewOrganizationService(log *slog.Logger) OrganizationService {
+	return &organizationService{
 		log:    log,
 		tracer: otel.Tracer("service/organization"),
 	}
 }
 
-func (s *svc) Create(ctx context.Context, querier repository.Querier, input CreateInput) (Organization, error) {
+func (s *organizationService) Create(ctx context.Context, querier repository.Querier, input CreateInput) (CreateOutput, error) {
 	ctx, span := s.tracer.Start(ctx, "OrganizationService.Create")
 	defer span.End()
 
@@ -41,8 +40,8 @@ func (s *svc) Create(ctx context.Context, querier repository.Querier, input Crea
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "create organization failed")
 		s.log.ErrorContext(ctx, "create organization failed", "error", err)
-		return Organization{}, service.ErrInternal
+		return CreateOutput{}, service.ErrInternal
 	}
 
-	return Organization{ID: row.ID, Name: row.Name, Type: row.Type}, nil
+	return CreateOutput{ID: row.ID, Name: row.Name, Type: row.Type}, nil
 }

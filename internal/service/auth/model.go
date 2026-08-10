@@ -9,25 +9,25 @@ type RegisterInput struct {
 }
 
 type RegisterOutput struct {
-	User         User
-	Organization Organization
-	Tokens       Tokens
+	User         UserOutput
+	Organization OrganizationOutput
+	Tokens       TokensOutput
 }
 
-type User struct {
+type UserOutput struct {
 	ID    uuid.UUID
 	Name  string
 	Email string
 }
 
-type Organization struct {
+type OrganizationOutput struct {
 	ID   uuid.UUID
 	Name string
 	Type string
 	Role string
 }
 
-type Tokens struct {
+type TokensOutput struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresIn    int

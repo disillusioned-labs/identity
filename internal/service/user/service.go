@@ -4,32 +4,31 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/identity/internal/service"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
 )
 
-type Service interface {
-	Create(ctx context.Context, querier repository.Querier, input CreateInput) (User, error)
+type UserService interface {
+	Create(ctx context.Context, querier repository.Querier, input CreateInput) (CreateOutput, error)
 }
 
-type svc struct {
+type userService struct {
 	log    *slog.Logger
 	tracer trace.Tracer
 }
 
-var _ Service = (*svc)(nil)
-
-func New(log *slog.Logger) Service {
-	return &svc{
+func NewUserService(log *slog.Logger) UserService {
+	return &userService{
 		log:    log,
 		tracer: otel.Tracer("service/user"),
 	}
 }
 
-func (s *svc) Create(ctx context.Context, querier repository.Querier, input CreateInput) (User, error) {
+func (s *userService) Create(ctx context.Context, querier repository.Querier, input CreateInput) (CreateOutput, error) {
 	ctx, span := s.tracer.Start(ctx, "UserService.Create")
 	defer span.End()
 
@@ -42,13 +41,13 @@ func (s *svc) Create(ctx context.Context, querier repository.Querier, input Crea
 		if service.IsUniqueViolation(err) {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "email already taken")
-			return User{}, service.ErrEmailTaken
+			return CreateOutput{}, service.ErrEmailTaken
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "create user failed")
 		s.log.ErrorContext(ctx, "create user failed", "error", err)
-		return User{}, service.ErrInternal
+		return CreateOutput{}, service.ErrInternal
 	}
 
-	return User{ID: row.ID, Name: row.Name, Email: row.Email}, nil
+	return CreateOutput{ID: row.ID, Name: row.Name, Email: row.Email}, nil
 }

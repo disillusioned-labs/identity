@@ -13,30 +13,23 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/disillusioned-labs/identity/internal/platform/crypto"
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/identity/internal/service"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/disillusioned-labs/identity/internal/platform/crypto"
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
 )
 
-type IssueInput struct {
-	UserID    uuid.UUID
-	OrgID     uuid.UUID
-	Role      string
-	UserAgent string
-	IPAddress string
+type JWTService interface {
+	Issue(ctx context.Context, input IssueInput) (IssueOutput, error)
 }
 
-type Service interface {
-	Issue(ctx context.Context, input IssueInput) (AuthTokens, error)
-}
-
-type svc struct {
+type jwtService struct {
 	repo            repository.Store
 	masterKey       []byte
 	accessTokenTTL  time.Duration
@@ -46,24 +39,22 @@ type svc struct {
 	tracer          trace.Tracer
 }
 
-var _ Service = (*svc)(nil)
-
-func New(
+func NewJWTService(
 	repo repository.Store,
 	masterKey []byte,
 	accessTokenTTL time.Duration,
 	refreshTokenTTL time.Duration,
 	issuer string,
 	log *slog.Logger,
-) Service {
-	return &svc{
+) JWTService {
+	return &jwtService{
 		repo:            repo,
 		masterKey:       masterKey,
 		accessTokenTTL:  accessTokenTTL,
 		refreshTokenTTL: refreshTokenTTL,
 		issuer:          issuer,
 		log:             log,
-		tracer:          otel.Tracer("service/auth"),
+		tracer:          otel.Tracer("service/jwt"),
 	}
 }
 
@@ -73,16 +64,16 @@ type jwtClaims struct {
 	jwt.RegisteredClaims
 }
 
-func (s *svc) Issue(ctx context.Context, input IssueInput) (AuthTokens, error) {
-	ctx, span := s.tracer.Start(ctx, "AuthService.Issue")
+func (s *jwtService) Issue(ctx context.Context, input IssueInput) (IssueOutput, error) {
+	ctx, span := s.tracer.Start(ctx, "JWTService.Issue")
 	defer span.End()
 
-	privKey, kid, err := s.loadOrCreateSigningKey(ctx)
+	privKey, kid, err := s.loadSigningKey(ctx)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "load signing key failed")
 		s.log.ErrorContext(ctx, "load signing key failed", "error", err)
-		return AuthTokens{}, err
+		return IssueOutput{}, err
 	}
 
 	now := time.Now()
@@ -105,7 +96,7 @@ func (s *svc) Issue(ctx context.Context, input IssueInput) (AuthTokens, error) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "sign token failed")
 		s.log.ErrorContext(ctx, "sign token failed", "error", err)
-		return AuthTokens{}, service.ErrInternal
+		return IssueOutput{}, service.ErrInternal
 	}
 
 	rawRefresh := make([]byte, 32)
@@ -113,7 +104,7 @@ func (s *svc) Issue(ctx context.Context, input IssueInput) (AuthTokens, error) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "generate refresh token failed")
 		s.log.ErrorContext(ctx, "generate refresh token failed", "error", err)
-		return AuthTokens{}, service.ErrInternal
+		return IssueOutput{}, service.ErrInternal
 	}
 	refreshToken := hex.EncodeToString(rawRefresh)
 
@@ -140,80 +131,49 @@ func (s *svc) Issue(ctx context.Context, input IssueInput) (AuthTokens, error) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "store refresh token failed")
 		s.log.ErrorContext(ctx, "store refresh token failed", "error", err)
-		return AuthTokens{}, service.ErrInternal
+		return IssueOutput{}, service.ErrInternal
 	}
 
-	return AuthTokens{
+	return IssueOutput{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresIn:    int(s.accessTokenTTL.Seconds()),
 	}, nil
 }
 
-func (s *svc) loadOrCreateSigningKey(ctx context.Context) (*rsa.PrivateKey, string, error) {
+func (s *jwtService) loadSigningKey(ctx context.Context) (*rsa.PrivateKey, string, error) {
+	span := trace.SpanFromContext(ctx)
+
 	row, err := s.repo.GetActiveSigningKey(ctx)
-	if err == nil {
-		privPEM, err := crypto.DecryptPrivateKey(row.PrivateKeyEncrypted, s.masterKey)
-		if err != nil {
-			span := trace.SpanFromContext(ctx)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "decrypt signing key failed")
-			s.log.ErrorContext(ctx, "decrypt signing key failed", "error", err)
-			return nil, "", service.ErrInternal
-		}
-		privKey, err := parseRSAPrivateKey(privPEM)
-		if err != nil {
-			span := trace.SpanFromContext(ctx)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "parse signing key failed")
-			s.log.ErrorContext(ctx, "parse signing key failed", "error", err)
-			return nil, "", service.ErrInternal
-		}
-		return privKey, row.Kid, nil
-	}
-
-	privPEM, pubPEM, err := crypto.GenerateKeyPair()
 	if err != nil {
-		span := trace.SpanFromContext(ctx)
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "generate key pair failed")
-		s.log.ErrorContext(ctx, "generate key pair failed", "error", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "no active signing key")
+			s.log.ErrorContext(ctx, "no active signing key: seed one with cmd/generate-signing-key")
+			return nil, "", service.ErrInternal
+		}
+		span.SetStatus(codes.Error, "load signing key failed")
+		s.log.ErrorContext(ctx, "load signing key failed", "error", err)
 		return nil, "", service.ErrInternal
 	}
 
-	encrypted, err := crypto.EncryptPrivateKey(privPEM, s.masterKey)
+	privPEM, err := crypto.DecryptPrivateKey(row.PrivateKeyEncrypted, s.masterKey)
 	if err != nil {
-		span := trace.SpanFromContext(ctx)
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "encrypt private key failed")
-		s.log.ErrorContext(ctx, "encrypt private key failed", "error", err)
-		return nil, "", service.ErrInternal
-	}
-
-	kid := uuid.New().String()
-	if err := s.repo.InsertSigningKey(ctx, repository.InsertSigningKeyParams{
-		Kid:                 kid,
-		PrivateKeyEncrypted: encrypted,
-		PublicKey:           string(pubPEM),
-		Algorithm:           "RS256",
-		IsActive:            true,
-	}); err != nil {
-		span := trace.SpanFromContext(ctx)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "persist signing key failed")
-		s.log.ErrorContext(ctx, "persist signing key failed", "error", err)
+		span.SetStatus(codes.Error, "decrypt signing key failed")
+		s.log.ErrorContext(ctx, "decrypt signing key failed", "error", err)
 		return nil, "", service.ErrInternal
 	}
 
 	privKey, err := parseRSAPrivateKey(privPEM)
 	if err != nil {
-		span := trace.SpanFromContext(ctx)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "parse signing key failed")
 		s.log.ErrorContext(ctx, "parse signing key failed", "error", err)
 		return nil, "", service.ErrInternal
 	}
-	return privKey, kid, nil
+
+	return privKey, row.Kid, nil
 }
 
 func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {

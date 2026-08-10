@@ -41,7 +41,7 @@ The cache-aside in `service/user` **demonstrates the pattern; it is not a recomm
 **Adding a resource** is a copy-paste of the `user` vertical - it exists as the template:
 1. `make migrate-new` → write SQL in `db/migrations/` (goose format, up+down in one file)
 2. Add queries in `db/queries/` → `make sqlc` (sqlc reads the migrations dir as schema)
-3. Copy `internal/service/user/` and `internal/handler/user/`, adapt
+3. Copy `internal/service/user/` and `internal/handler/auth/`, adapt - including the names: `<Resource>Service` / `New<Resource>Service` / `<resource>Service` (see Conventions)
 4. Wire it in `internal/app/di.go` (add construction) and `internal/server/server.go` (add a `Deps` field + `r.Mount`). `app.go`, `cmd/` and `internal/platform/` never change.
 
 Adding a resource must not require editing `internal/handler/respond.go` or `internal/service/errors.go`. If it does, the error model has regressed - see below.
@@ -111,6 +111,23 @@ Build provenance reaches Prometheus as `target_info{service_version,vcs_ref_head
 ## Conventions
 
 - Comments explain *why* or a contract, never *what*. Every exported symbol has a doc comment (revive enforces this).
+- **Service naming is resource-qualified, not package-relative.** Each `internal/service/<resource>` package exports `<Resource>Service` (interface) and `New<Resource>Service` (constructor), and keeps the implementation unexported as `<resource>Service`:
+
+```go
+package user
+
+type UserService interface { ... }
+type userService struct { ... }
+func NewUserService(log *slog.Logger) UserService { return &userService{...} }
+func (s *userService) Create(...) (User, error)
+```
+
+  Call sites read `userservice.NewUserService(log)` and `Deps{Auth: authservice.AuthService}`. The name repeats what the package already says, which is the point: at the composition layer (`di.go`, `server.go`) and in `Deps` fields, half a dozen imports are aliased `*service` and a bare `Service` says nothing about which one. The receiver name follows the same rule so a stack trace or a grep for `authService` finds one thing.
+
+- **No `var _ Service = (*svc)(nil)` assertions in service packages.** The constructor returns the interface, so the compiler already rejects an incomplete implementation at the `return &userService{...}` line. Adding the assertion only matters if a constructor returns the concrete type - which this codebase does not do.
+- **A service package is exactly two files: `model.go` (types) and `service.go` (interface + implementation).** There is no `input.go`/`output.go` split - one method's parameter and return type are read together far more often than all the inputs are read together. Split further only past ~200 lines.
+- **Types in `model.go` are suffixed `Input` or `Output`, named after the method they belong to**: `Create` takes `CreateInput` and returns `CreateOutput`; `Issue` takes `IssueInput` and returns `IssueOutput`. Types nested inside an Output carry the suffix too (`RegisterOutput.User` is a `UserOutput`), so a bare name in a service package always means something that is not part of a method's signature - `jwt.Claims` is the current example. Note the consequence: when a resource grows `Get` and `List`, `GetOutput` may be field-for-field identical to `CreateOutput`. Accept the duplication until a *third* identical copy appears; collapsing early is what couples two endpoints that were free to diverge.
+- **Service types carry no struct tags.** `json` and `validate` tags live on `handler/<resource>`'s `Request`/`Response` types, `pgtype` on sqlc's generated rows. Three shapes, three reasons: the wire contract in `docs/04-api-contract.md` must stay stable while the domain moves, gRPC arrives in M3 as a second consumer, and the snapshot pattern is nested in JSON but flat in the database (`docs/05-schema.md`). The handler maps between them (`toRegisterResponse` in `handler/auth/response.go`) - a service must never build a response type.
 - Import order: stdlib / third-party / `github.com/disillusioned-labs/identity/...` last, grouped by `gofumpt.module-path` and `goimports.local-prefixes` in `.golangci.yml`.
 - Line endings are LF everywhere (`.gitattributes` enforces); CRLF breaks gofumpt.
 - Tests use hand-written fakes (`fakeStore`, `mockUserService`, `stubUserService` patterns) - no mock generation tooling.
