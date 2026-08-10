@@ -72,25 +72,26 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 	}
 
 	var (
-		user   repository.CreateUserRow
-		org    repository.CreateOrganizationRow
-		tokens tokens
+		user         repository.CreateUserRow
+		organization repository.CreateOrganizationRow
+		tokens       tokens
 	)
 
-	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
-		user, err = q.CreateUser(ctx, repository.CreateUserParams{
+	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
+		user, err = querier.CreateUser(ctx, repository.CreateUserParams{
 			Email:    input.Email,
 			Password: string(hash),
 			Name:     input.Name,
 		})
 		if err != nil {
 			if service.IsUniqueViolation(err) {
+				span.SetStatus(codes.Error, "email already taken")
 				return service.ErrEmailTaken
 			}
 			return err
 		}
 
-		org, err = q.CreateOrganization(ctx, repository.CreateOrganizationParams{
+		organization, err = querier.CreateOrganization(ctx, repository.CreateOrganizationParams{
 			Name: "Personal " + input.Name,
 			Type: constant.OrganizationTypePersonal,
 		})
@@ -98,27 +99,27 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			return err
 		}
 
-		if _, err := q.CreateOrganizationMember(ctx, repository.CreateOrganizationMemberParams{
-			OrganizationID: org.ID,
+		if _, err := querier.CreateOrganizationMember(ctx, repository.CreateOrganizationMemberParams{
+			OrganizationID: organization.ID,
 			UserID:         user.ID,
 			Role:           constant.RoleOwner,
 		}); err != nil {
 			return err
 		}
 
-		if _, err := q.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
+		if _, err := querier.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
 			ID:                       user.ID,
-			LastActiveOrganizationID: &org.ID,
+			LastActiveOrganizationID: &organization.ID,
 		}); err != nil {
 			return err
 		}
 
-		tokens, err = s.issueTokens(ctx, q, issueParams{
-			UserID:    user.ID,
-			OrgID:     org.ID,
-			Role:      constant.RoleOwner,
-			UserAgent: input.UserAgent,
-			IPAddress: input.IPAddress,
+		tokens, err = s.issueTokens(ctx, querier, issueParams{
+			UserID:         user.ID,
+			OrganizationID: organization.ID,
+			Role:           constant.RoleOwner,
+			UserAgent:      input.UserAgent,
+			IPAddress:      input.IPAddress,
 		})
 		return err
 	})
@@ -128,7 +129,7 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 
 	span.SetAttributes(
 		attribute.String("user.id", user.ID.String()),
-		attribute.String("organization.id", org.ID.String()),
+		attribute.String("organization.id", organization.ID.String()),
 	)
 
 	return RegisterOutput{
@@ -138,9 +139,9 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			Email: user.Email,
 		},
 		Organization: OrganizationOutput{
-			ID:   org.ID,
-			Name: org.Name,
-			Type: org.Type,
+			ID:   organization.ID,
+			Name: organization.Name,
+			Type: organization.Type,
 			Role: constant.RoleOwner,
 		},
 		Tokens: TokensOutput(tokens),
@@ -154,25 +155,25 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 	user, err := s.repo.GetUserByEmail(ctx, input.Email)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			span.SetStatus(codes.Error, "invalid credentials")
+			span.SetStatus(codes.Error, "no active user with that email")
 			return LoginOutput{}, service.ErrUnauthenticated
 		}
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "lookup user failed")
-		s.log.ErrorContext(ctx, "lookup user failed", "error", err)
+		span.SetStatus(codes.Error, "query user by email failed")
+		s.log.ErrorContext(ctx, "query user by email failed", "error", err)
 		return LoginOutput{}, service.ErrInternal
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		span.SetStatus(codes.Error, "invalid credentials")
+		span.SetStatus(codes.Error, "password mismatch")
 		return LoginOutput{}, service.ErrUnauthenticated
 	}
 
 	memberships, err := s.repo.ListUserMemberships(ctx, user.ID)
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "list memberships failed")
-		s.log.ErrorContext(ctx, "list memberships failed", "error", err)
+		span.SetStatus(codes.Error, "query user memberships failed")
+		s.log.ErrorContext(ctx, "query user memberships failed", "error", err)
 		return LoginOutput{}, service.ErrInternal
 	}
 	if len(memberships) == 0 {
@@ -190,9 +191,9 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 
 	var tokens tokens
 
-	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
 		if user.LastActiveOrganizationID == nil || *user.LastActiveOrganizationID != active.OrganizationID {
-			if _, err := q.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
+			if _, err := querier.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
 				ID:                       user.ID,
 				LastActiveOrganizationID: &active.OrganizationID,
 			}); err != nil {
@@ -201,12 +202,12 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		}
 
 		var err error
-		tokens, err = s.issueTokens(ctx, q, issueParams{
-			UserID:    user.ID,
-			OrgID:     active.OrganizationID,
-			Role:      active.Role,
-			UserAgent: input.UserAgent,
-			IPAddress: input.IPAddress,
+		tokens, err = s.issueTokens(ctx, querier, issueParams{
+			UserID:         user.ID,
+			OrganizationID: active.OrganizationID,
+			Role:           active.Role,
+			UserAgent:      input.UserAgent,
+			IPAddress:      input.IPAddress,
 		})
 		return err
 	})
@@ -241,8 +242,8 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			return RefreshOutput{}, service.ErrUnauthenticated
 		}
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "lookup refresh token failed")
-		s.log.ErrorContext(ctx, "lookup refresh token failed", "error", err)
+		span.SetStatus(codes.Error, "query refresh token failed")
+		s.log.ErrorContext(ctx, "query refresh token failed", "error", err)
 		return RefreshOutput{}, service.ErrInternal
 	}
 
@@ -266,34 +267,38 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 
 	var tokens tokens
 
-	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
-		user, err := q.GetUserByID(ctx, stored.UserID)
+	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
+		user, err := querier.GetUserByID(ctx, stored.UserID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				span.SetStatus(codes.Error, "user no longer active")
 				return service.ErrUnauthenticated
 			}
 			return err
 		}
 		if user.LastActiveOrganizationID == nil {
+			span.SetStatus(codes.Error, "user has no active organization")
 			return service.ErrUnauthenticated
 		}
 
-		membership, err := q.GetMembership(ctx, repository.GetMembershipParams{
+		membership, err := querier.GetMembership(ctx, repository.GetMembershipParams{
 			UserID:         user.ID,
 			OrganizationID: *user.LastActiveOrganizationID,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				span.SetStatus(codes.Error, "membership no longer active")
 				return service.ErrUnauthenticated
 			}
 			return err
 		}
 
-		revoked, err := q.RevokeRefreshToken(ctx, stored.ID)
+		revoked, err := querier.RevokeRefreshToken(ctx, stored.ID)
 		if err != nil {
 			return err
 		}
 		if revoked == 0 {
+			span.SetStatus(codes.Error, "refresh token revoked concurrently")
 			return service.ErrUnauthenticated
 		}
 
@@ -302,12 +307,12 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			attribute.String("organization.id", membership.OrganizationID.String()),
 		)
 
-		tokens, err = s.issueTokens(ctx, q, issueParams{
-			UserID:    user.ID,
-			OrgID:     membership.OrganizationID,
-			Role:      membership.Role,
-			UserAgent: input.UserAgent,
-			IPAddress: input.IPAddress,
+		tokens, err = s.issueTokens(ctx, querier, issueParams{
+			UserID:         user.ID,
+			OrganizationID: membership.OrganizationID,
+			Role:           membership.Role,
+			UserAgent:      input.UserAgent,
+			IPAddress:      input.IPAddress,
 		})
 		return err
 	})
@@ -318,35 +323,21 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 	return RefreshOutput{Tokens: TokensOutput(tokens)}, nil
 }
 
-type tokens struct {
-	AccessToken  string
-	RefreshToken string
-	ExpiresIn    int
-}
-
-type issueParams struct {
-	UserID    uuid.UUID
-	OrgID     uuid.UUID
-	Role      string
-	UserAgent string
-	IPAddress string
-}
-
-func (s *authService) issueTokens(ctx context.Context, q repository.Querier, params issueParams) (tokens, error) {
-	privKey, kid, err := s.loadSigningKey(ctx, q)
+func (s *authService) issueTokens(ctx context.Context, querier repository.Querier, params issueParams) (tokens, error) {
+	privateKey, kid, err := s.loadSigningKey(ctx, querier)
 	if err != nil {
 		return tokens{}, err
 	}
 
 	now := time.Now()
 
-	accessToken, err := platformjwt.Sign(privKey, kid, platformjwt.Claims{
-		Subject:   params.UserID.String(),
-		OrgID:     params.OrgID.String(),
-		Role:      params.Role,
-		Issuer:    s.issuer,
-		IssuedAt:  now,
-		ExpiresAt: now.Add(s.accessTokenTTL),
+	accessToken, err := platformjwt.Sign(privateKey, kid, platformjwt.Claims{
+		Subject:        params.UserID.String(),
+		OrganizationID: params.OrganizationID.String(),
+		Role:           params.Role,
+		Issuer:         s.issuer,
+		IssuedAt:       now,
+		ExpiresAt:      now.Add(s.accessTokenTTL),
 	})
 	if err != nil {
 		s.log.ErrorContext(ctx, "sign access token failed", "error", err)
@@ -359,23 +350,23 @@ func (s *authService) issueTokens(ctx context.Context, q repository.Querier, par
 		return tokens{}, service.ErrInternal
 	}
 
-	var ipAddr *netip.Addr
+	var ipAddress *netip.Addr
 	if params.IPAddress != "" {
 		if parsed, err := netip.ParseAddr(params.IPAddress); err == nil {
-			ipAddr = &parsed
+			ipAddress = &parsed
 		}
 	}
 
-	var ua pgtype.Text
+	var userAgent pgtype.Text
 	if params.UserAgent != "" {
-		ua = pgtype.Text{String: params.UserAgent, Valid: true}
+		userAgent = pgtype.Text{String: params.UserAgent, Valid: true}
 	}
 
-	if _, err := q.CreateRefreshToken(ctx, repository.CreateRefreshTokenParams{
+	if _, err := querier.CreateRefreshToken(ctx, repository.CreateRefreshTokenParams{
 		UserID:    params.UserID,
 		TokenHash: platformjwt.HashRefreshToken(refreshToken),
-		UserAgent: ua,
-		IpAddress: ipAddr,
+		UserAgent: userAgent,
+		IpAddress: ipAddress,
 		ExpiresAt: now.Add(s.refreshTokenTTL),
 	}); err != nil {
 		return tokens{}, err
@@ -388,8 +379,8 @@ func (s *authService) issueTokens(ctx context.Context, q repository.Querier, par
 	}, nil
 }
 
-func (s *authService) loadSigningKey(ctx context.Context, q repository.Querier) (*rsa.PrivateKey, string, error) {
-	row, err := q.GetActiveSigningKey(ctx)
+func (s *authService) loadSigningKey(ctx context.Context, querier repository.Querier) (*rsa.PrivateKey, string, error) {
+	row, err := querier.GetActiveSigningKey(ctx)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.log.ErrorContext(ctx, "no active signing key: seed one with cmd/generate-signing-key")
@@ -399,19 +390,19 @@ func (s *authService) loadSigningKey(ctx context.Context, q repository.Querier) 
 		return nil, "", service.ErrInternal
 	}
 
-	privPEM, err := crypto.DecryptPrivateKey(row.PrivateKeyEncrypted, s.masterKey)
+	privateKeyPEM, err := crypto.DecryptPrivateKey(row.PrivateKeyEncrypted, s.masterKey)
 	if err != nil {
 		s.log.ErrorContext(ctx, "decrypt signing key failed", "error", err)
 		return nil, "", service.ErrInternal
 	}
 
-	privKey, err := platformjwt.ParsePrivateKey(privPEM)
+	privateKey, err := platformjwt.ParsePrivateKey(privateKeyPEM)
 	if err != nil {
 		s.log.ErrorContext(ctx, "parse signing key failed", "error", err)
 		return nil, "", service.ErrInternal
 	}
 
-	return privKey, row.Kid, nil
+	return privateKey, row.Kid, nil
 }
 
 func (s *authService) txError(ctx context.Context, span trace.Span, err error, msg string) error {
@@ -421,7 +412,6 @@ func (s *authService) txError(ctx context.Context, span trace.Span, err error, m
 		s.log.ErrorContext(ctx, msg, "error", err)
 		return service.ErrInternal
 	}
-	span.SetStatus(codes.Error, err.Error())
 	return err
 }
 

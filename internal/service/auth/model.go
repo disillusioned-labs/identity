@@ -57,3 +57,17 @@ type TokensOutput struct {
 	RefreshToken string
 	ExpiresIn    int
 }
+
+type issueParams struct {
+	UserID         uuid.UUID
+	OrganizationID uuid.UUID
+	Role           string
+	UserAgent      string
+	IPAddress      string
+}
+
+type tokens struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int
+}

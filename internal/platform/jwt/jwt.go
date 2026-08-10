@@ -14,24 +14,24 @@ import (
 const Algorithm = "RS256"
 
 type Claims struct {
-	Subject   string
-	OrgID     string
-	Role      string
-	Issuer    string
-	IssuedAt  time.Time
-	ExpiresAt time.Time
+	Subject        string
+	OrganizationID string
+	Role           string
+	Issuer         string
+	IssuedAt       time.Time
+	ExpiresAt      time.Time
 }
 
 type registeredClaims struct {
-	OrgID string `json:"org_id"`
-	Role  string `json:"role"`
+	OrganizationID string `json:"org_id"`
+	Role           string `json:"role"`
 	gojwt.RegisteredClaims
 }
 
 func Sign(key *rsa.PrivateKey, kid string, claims Claims) (string, error) {
 	token := gojwt.NewWithClaims(gojwt.SigningMethodRS256, registeredClaims{
-		OrgID: claims.OrgID,
-		Role:  claims.Role,
+		OrganizationID: claims.OrganizationID,
+		Role:           claims.Role,
 		RegisteredClaims: gojwt.RegisteredClaims{
 			Subject:   claims.Subject,
 			Issuer:    claims.Issuer,
