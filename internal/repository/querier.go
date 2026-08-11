@@ -21,6 +21,7 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error)
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
+	ListActiveSigningKeys(ctx context.Context) ([]ListActiveSigningKeysRow, error)
 	ListUserMemberships(ctx context.Context, userID uuid.UUID) ([]ListUserMembershipsRow, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) (int64, error)

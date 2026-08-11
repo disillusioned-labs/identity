@@ -58,6 +58,44 @@ func (q *Queries) InsertSigningKey(ctx context.Context, arg InsertSigningKeyPara
 	return err
 }
 
+const listActiveSigningKeys = `-- name: ListActiveSigningKeys :many
+SELECT kid, private_key_encrypted, public_key, algorithm
+FROM signing_keys
+WHERE is_active = true
+`
+
+type ListActiveSigningKeysRow struct {
+	Kid                 string `json:"kid"`
+	PrivateKeyEncrypted []byte `json:"private_key_encrypted"`
+	PublicKey           string `json:"public_key"`
+	Algorithm           string `json:"algorithm"`
+}
+
+func (q *Queries) ListActiveSigningKeys(ctx context.Context) ([]ListActiveSigningKeysRow, error) {
+	rows, err := q.db.Query(ctx, listActiveSigningKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActiveSigningKeysRow{}
+	for rows.Next() {
+		var i ListActiveSigningKeysRow
+		if err := rows.Scan(
+			&i.Kid,
+			&i.PrivateKeyEncrypted,
+			&i.PublicKey,
+			&i.Algorithm,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const rotateSigningKey = `-- name: RotateSigningKey :exec
 UPDATE signing_keys SET is_active = false WHERE is_active = true
 `

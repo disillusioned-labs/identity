@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
@@ -31,8 +32,14 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 		log,
 	)
 
+	jwksService := jwkservice.NewJwksService(
+		repo,
+		log,
+	)
+
 	return server.Deps{
-		Auth:          auth,
+		AuthService:   auth,
+		JwksService:   jwksService,
 		Pool:          pool,
 		Redis:         rdb,
 		RedisRequired: redisRequired,

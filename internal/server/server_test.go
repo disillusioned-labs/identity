@@ -38,7 +38,7 @@ func newTestServerWith(t *testing.T) *Server {
 		Redis:     config.RedisConfig{Mode: config.RedisModeDisabled},
 		RateLimit: config.RateLimitConfig{Enabled: true, Requests: 1, Window: time.Second},
 	}
-	return New(cfg, slog.New(slog.DiscardHandler), Deps{Auth: stubAuthService{}})
+	return New(cfg, slog.New(slog.DiscardHandler), Deps{AuthService: stubAuthService{}})
 }
 
 func TestRateLimitEnvelope(t *testing.T) {

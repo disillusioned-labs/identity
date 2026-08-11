@@ -53,6 +53,17 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
+func requestIDResponse(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := middleware.GetReqID(r.Context())
+		if requestID != "" {
+			w.Header().Set("X-Request-ID", requestID)
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func levelFor(status int) slog.Level {
 	switch {
 	case status >= 500:

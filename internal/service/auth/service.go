@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
@@ -23,6 +22,8 @@ import (
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
 )
+
+var tracer = otel.Tracer("service/auth")
 
 type AuthService interface {
 	Register(ctx context.Context, input RegisterInput) (RegisterOutput, error)
@@ -37,7 +38,6 @@ type authService struct {
 	refreshTokenTTL time.Duration
 	issuer          string
 	log             *slog.Logger
-	tracer          trace.Tracer
 }
 
 func NewAuthService(
@@ -55,12 +55,11 @@ func NewAuthService(
 		refreshTokenTTL: refreshTokenTTL,
 		issuer:          issuer,
 		log:             log,
-		tracer:          otel.Tracer("service/auth"),
 	}
 }
 
 func (s *authService) Register(ctx context.Context, input RegisterInput) (RegisterOutput, error) {
-	ctx, span := s.tracer.Start(ctx, "AuthService.Register")
+	ctx, span := tracer.Start(ctx, "AuthService.Register")
 	defer span.End()
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
@@ -124,7 +123,10 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 		return err
 	})
 	if err != nil {
-		return RegisterOutput{}, s.txError(ctx, span, err, "register transaction failed")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "register transaction failed")
+		s.log.ErrorContext(ctx, "register transaction failed", "error", err)
+		return RegisterOutput{}, service.ErrInternal
 	}
 
 	span.SetAttributes(
@@ -149,7 +151,7 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 }
 
 func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput, error) {
-	ctx, span := s.tracer.Start(ctx, "AuthService.Login")
+	ctx, span := tracer.Start(ctx, "AuthService.Login")
 	defer span.End()
 
 	user, err := s.repo.GetUserByEmail(ctx, input.Email)
@@ -212,7 +214,10 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		return err
 	})
 	if err != nil {
-		return LoginOutput{}, s.txError(ctx, span, err, "login transaction failed")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "login transaction failed")
+		s.log.ErrorContext(ctx, "login transaction failed", "error", err)
+		return LoginOutput{}, service.ErrInternal
 	}
 
 	return LoginOutput{
@@ -232,7 +237,7 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 }
 
 func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error) {
-	ctx, span := s.tracer.Start(ctx, "AuthService.Refresh")
+	ctx, span := tracer.Start(ctx, "AuthService.Refresh")
 	defer span.End()
 
 	stored, err := s.repo.GetRefreshTokenByHash(ctx, platformjwt.HashRefreshToken(input.RefreshToken))
@@ -317,7 +322,10 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 		return err
 	})
 	if err != nil {
-		return RefreshOutput{}, s.txError(ctx, span, err, "refresh transaction failed")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "refresh transaction failed")
+		s.log.ErrorContext(ctx, "refresh transaction failed", "error", err)
+		return RefreshOutput{}, service.ErrInternal
 	}
 
 	return RefreshOutput{Tokens: TokensOutput(tokens)}, nil
@@ -403,16 +411,6 @@ func (s *authService) loadSigningKey(ctx context.Context, querier repository.Que
 	}
 
 	return privateKey, row.Kid, nil
-}
-
-func (s *authService) txError(ctx context.Context, span trace.Span, err error, msg string) error {
-	span.RecordError(err)
-	if !service.IsError(err) {
-		span.SetStatus(codes.Error, msg)
-		s.log.ErrorContext(ctx, msg, "error", err)
-		return service.ErrInternal
-	}
-	return err
 }
 
 func selectActiveOrganization(

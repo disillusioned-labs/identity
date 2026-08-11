@@ -57,8 +57,3 @@ func IsUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
 }
-
-func IsError(err error) bool {
-	var svcErr *Error
-	return errors.As(err, &svcErr)
-}

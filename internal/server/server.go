@@ -12,6 +12,7 @@ import (
 	"github.com/disillusioned-labs/identity/internal/handler"
 	authhandler "github.com/disillusioned-labs/identity/internal/handler/auth"
 	"github.com/disillusioned-labs/identity/internal/handler/health"
+	jwkshandler "github.com/disillusioned-labs/identity/internal/handler/jwks"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -21,6 +22,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
+	jwksservice "github.com/disillusioned-labs/identity/internal/service/jwks"
 )
 
 // Server wraps the http.Server with the assembled router and logger.
@@ -49,7 +51,8 @@ func (p redisPinger) Ping(ctx context.Context) error { return p.rdb.Ping(ctx).Er
 // Deps carries everything the router needs. Adding a resource adds a field
 // here; New's signature never changes.
 type Deps struct {
-	Auth authservice.AuthService
+	AuthService authservice.AuthService
+	JwksService jwksservice.JwksService
 
 	Pool          *pgxpool.Pool
 	Redis         *goredis.Client
@@ -66,6 +69,7 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 	// unconditionally, letting any client spoof its address (and evade the
 	// rate limiter). Deployments behind a trusted proxy should add their own
 	// middleware that only honors forwarded headers from that proxy.
+	r.Use(requestIDResponse)
 	r.Use(routePattern)
 	r.Use(requestLogger(log))
 	r.Use(recoverPanics(log))
@@ -98,6 +102,10 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 	// platform/telemetry). A scrape endpoint would put route patterns, latency
 	// distributions and pool sizes on an unauthenticated public port.
 
+	r.Route("/", func(r chi.Router) {
+		r.Mount("/", jwkshandler.NewJwksHandler(deps.JwksService, log).Routes())
+	})
+
 	r.Route("/api/v1", func(r chi.Router) {
 		// Rate limit only the API subtree so health probes - hit constantly by
 		// orchestrators - are never throttled. Requests is the per-IP count
@@ -115,7 +123,7 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 				}),
 			))
 		}
-		r.Mount("/auth", authhandler.NewHandler(deps.Auth, log).Routes())
+		r.Mount("/auth", authhandler.NewAuthHandler(deps.AuthService, log).Routes())
 	})
 
 	// otelhttp wraps the whole router: creates the server span, extracts
