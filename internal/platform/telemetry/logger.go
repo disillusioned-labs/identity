@@ -14,8 +14,9 @@ import (
 type LogOption func(*logOptions)
 
 type logOptions struct {
-	format string
-	env    string
+	format  string
+	env     string
+	service string
 }
 
 // Format selects the handler: "text" for local development, anything else
@@ -27,6 +28,10 @@ func Format(f string) LogOption {
 // Env stamps every record with an "env" attribute identifying the deployment.
 func Env(e string) LogOption {
 	return func(o *logOptions) { o.env = e }
+}
+
+func Service(s string) LogOption {
+	return func(o *logOptions) { o.service = s }
 }
 
 // NewLogger builds a slog.Logger at the given level ("debug", "info", "warn",
@@ -51,6 +56,9 @@ func NewLogger(level string, opts ...LogOption) *slog.Logger {
 	log := slog.New(traceHandler{handler})
 	if o.env != "" {
 		log = log.With("env", o.env)
+	}
+	if o.service != "" {
+		log = log.With("service", o.service)
 	}
 	return log
 }

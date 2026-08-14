@@ -18,28 +18,33 @@ type JWK struct {
 	E   string `json:"e"`
 }
 
-func PublicKeyToJWKS(pubPEM string, kid string) (JWK, error) {
-	// PEM decode
-	block, _ := pem.Decode([]byte(pubPEM))
+func ParseRSAPublicKey(pemKey string) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemKey))
 	if block == nil {
-		return JWK{}, errors.New("failed to decode PEM")
+		return nil, errors.New("failed to decode PEM")
 	}
 
-	// Parse public key (PKIX)
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return JWK{}, errors.New(fmt.Sprintf("failed to parse public key: %w", err))
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
 	}
 
-	rsaPub, ok := pub.(*rsa.PublicKey)
+	publicKey, ok := key.(*rsa.PublicKey)
 	if !ok {
-		return JWK{}, errors.New("public key is not RSA")
+		return nil, fmt.Errorf("public key is %T, want *rsa.PublicKey", key)
 	}
 
-	// RSA modulus (n)
+	return publicKey, nil
+}
+
+func PublicKeyToJWKS(pubPEM string, kid string) (JWK, error) {
+	rsaPub, err := ParseRSAPublicKey(pubPEM)
+	if err != nil {
+		return JWK{}, fmt.Errorf("parse RSA public key: %w", err)
+	}
+
 	n := base64.RawURLEncoding.EncodeToString(rsaPub.N.Bytes())
 
-	// RSA exponent (e)
 	e := base64.RawURLEncoding.EncodeToString(
 		[]byte{
 			byte(rsaPub.E >> 16),
@@ -48,14 +53,12 @@ func PublicKeyToJWKS(pubPEM string, kid string) (JWK, error) {
 		},
 	)
 
-	jwks := JWK{
+	return JWK{
 		Kty: "RSA",
 		Kid: kid,
 		Use: "sig",
 		Alg: "RS256",
 		N:   n,
 		E:   e,
-	}
-
-	return jwks, nil
+	}, nil
 }

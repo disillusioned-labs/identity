@@ -26,6 +26,7 @@ import (
 // the domain errors themselves (see service.Error) so this list never has to
 // grow when a resource is added.
 const (
+	CodeUnauthorized     = "UNAUTHORIZED"
 	CodeBadRequest       = "BAD_REQUEST"
 	CodeValidationFailed = "VALIDATION_FAILED"
 	CodeNotFound         = "NOT_FOUND"

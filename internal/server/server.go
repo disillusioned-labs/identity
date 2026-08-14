@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/disillusioned-labs/authkit"
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/handler"
 	authhandler "github.com/disillusioned-labs/identity/internal/handler/auth"
@@ -54,6 +55,7 @@ type Deps struct {
 	AuthService authservice.AuthService
 	JwksService jwksservice.JwksService
 
+	Verifier      *authkit.Verifier
 	Pool          *pgxpool.Pool
 	Redis         *goredis.Client
 	RedisRequired bool
@@ -102,8 +104,18 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 	// platform/telemetry). A scrape endpoint would put route patterns, latency
 	// distributions and pool sizes on an unauthenticated public port.
 
+	authHandler := authhandler.NewAuthHandler(
+		deps.AuthService,
+		log,
+	)
+
+	jwksHandler := jwkshandler.NewJwksHandler(
+		deps.JwksService,
+		log,
+	)
+
 	r.Route("/", func(r chi.Router) {
-		r.Mount("/", jwkshandler.NewJwksHandler(deps.JwksService, log).Routes())
+		jwksHandler.Routes(r)
 	})
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -123,7 +135,14 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 				}),
 			))
 		}
-		r.Mount("/auth", authhandler.NewAuthHandler(deps.AuthService, log).Routes())
+		r.Route("/auth", func(r chi.Router) {
+			authHandler.PublicRoutes(r)
+
+			r.Group(func(r chi.Router) {
+				r.Use(deps.Verifier.Middleware)
+				authHandler.ProtectedRoutes(r)
+			})
+		})
 	})
 
 	// otelhttp wraps the whole router: creates the server span, extracts

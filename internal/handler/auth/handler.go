@@ -99,6 +99,25 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	handler.OK(w, http.StatusOK, toRefreshResponse(output))
 }
 
+func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.refresh")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	claims, ok := handler.ClaimsFrom(r.Context())
+	if !ok {
+		handler.WriteError(
+			w,
+			http.StatusUnauthorized,
+			handler.CodeUnauthorized,
+			"unauthorized",
+		)
+		return
+	}
+
+	handler.WriteJSON(w, http.StatusOK, claims)
+}
+
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

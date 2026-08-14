@@ -39,6 +39,7 @@ func Run(cfg *config.Config) error {
 	log := telemetry.NewLogger(cfg.Log.Level,
 		telemetry.Format(cfg.Log.Format),
 		telemetry.Env(cfg.Service.Env),
+		telemetry.Service(cfg.Service.Name),
 	)
 	slog.SetDefault(log)
 	log.Info("starting", "service", cfg.Service.Name, "build", buildInfo())

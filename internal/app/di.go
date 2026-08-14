@@ -1,9 +1,14 @@
 package app
 
 import (
+	"context"
+	"crypto/rsa"
 	"fmt"
 	"log/slog"
+	"net/http"
 
+	"github.com/disillusioned-labs/authkit"
+	"github.com/disillusioned-labs/identity/internal/handler"
 	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -14,6 +19,19 @@ import (
 	"github.com/disillusioned-labs/identity/internal/server"
 	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
 )
+
+type jwksKeySource struct {
+	service jwkservice.JwksService
+}
+
+func (s jwksKeySource) Fetch(ctx context.Context) (map[string]*rsa.PublicKey, []byte, error) {
+	keys, err := s.service.PublicKeys(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return keys, nil, nil
+}
 
 func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ cache.Cache, authCfg config.AuthConfig, log *slog.Logger) (server.Deps, error) {
 	repo := repository.NewStore(pool)
@@ -37,9 +55,34 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 		log,
 	)
 
+	authErrorHandler := func(
+		w http.ResponseWriter,
+		_ *http.Request,
+		_ error,
+	) {
+		handler.WriteError(
+			w,
+			http.StatusUnauthorized,
+			handler.CodeUnauthorized,
+			"unauthorized",
+		)
+	}
+
+	verifier := authkit.New(
+		authkit.Config{
+			Issuer: authCfg.Issuer,
+		},
+		authkit.WithKeySource(jwksKeySource{
+			service: jwksService,
+		}),
+		authkit.WithErrorHandler(authErrorHandler),
+		authkit.WithLogger(log),
+	)
+
 	return server.Deps{
 		AuthService:   auth,
 		JwksService:   jwksService,
+		Verifier:      verifier,
 		Pool:          pool,
 		Redis:         rdb,
 		RedisRequired: redisRequired,
