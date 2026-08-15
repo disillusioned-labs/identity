@@ -14,6 +14,10 @@ import (
 	authhandler "github.com/disillusioned-labs/identity/internal/handler/auth"
 	"github.com/disillusioned-labs/identity/internal/handler/health"
 	jwkshandler "github.com/disillusioned-labs/identity/internal/handler/jwks"
+	organizationhandler "github.com/disillusioned-labs/identity/internal/handler/organization"
+	organizationmemberhandler "github.com/disillusioned-labs/identity/internal/handler/organization_member"
+	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
+	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -52,8 +56,10 @@ func (p redisPinger) Ping(ctx context.Context) error { return p.rdb.Ping(ctx).Er
 // Deps carries everything the router needs. Adding a resource adds a field
 // here; New's signature never changes.
 type Deps struct {
-	AuthService authservice.AuthService
-	JwksService jwksservice.JwksService
+	AuthService               authservice.AuthService
+	JwksService               jwksservice.JwksService
+	OrganizationService       organizationservice.OrganizationService
+	OrganizationMemberService organizationmemberservice.OrganizationMemberService
 
 	Verifier      *authkit.Verifier
 	Pool          *pgxpool.Pool
@@ -114,6 +120,16 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 		log,
 	)
 
+	organizationHandler := organizationhandler.NewOrganizationHandler(
+		deps.OrganizationService,
+		log,
+	)
+
+	organizationMemberHandler := organizationmemberhandler.NewOrganizationMemberHandler(
+		deps.OrganizationMemberService,
+		log,
+	)
+
 	r.Route("/", func(r chi.Router) {
 		jwksHandler.Routes(r)
 	})
@@ -142,6 +158,12 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 				r.Use(deps.Verifier.Middleware)
 				authHandler.ProtectedRoutes(r)
 			})
+		})
+
+		r.Route("/organizations", func(r chi.Router) {
+			r.Use(deps.Verifier.Middleware)
+			organizationHandler.ProtectedRoutes(r)
+			organizationMemberHandler.ProtectedRoutes(r)
 		})
 	})
 

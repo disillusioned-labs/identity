@@ -7,14 +7,52 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
+const countActiveOrganizationMembers = `-- name: CountActiveOrganizationMembers :one
+SELECT COUNT(*)
+FROM organization_members
+WHERE organization_id = $1
+  AND deleted_at IS NULL
+`
+
+func (q *Queries) CountActiveOrganizationMembers(ctx context.Context, organizationID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveOrganizationMembers, organizationID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countActiveOrganizationOwners = `-- name: CountActiveOrganizationOwners :one
+SELECT COUNT(*)
+FROM organization_members
+WHERE organization_id = $1
+  AND role = 'owner'
+  AND deleted_at IS NULL
+`
+
+func (q *Queries) CountActiveOrganizationOwners(ctx context.Context, organizationID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveOrganizationOwners, organizationID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createOrganizationMember = `-- name: CreateOrganizationMember :one
-INSERT INTO organization_members (organization_id, user_id, role)
+INSERT INTO organization_members (
+    organization_id,
+    user_id,
+    role
+)
 VALUES ($1, $2, $3)
-    RETURNING organization_id, user_id, role
+    RETURNING
+    organization_id,
+    user_id,
+    role,
+    joined_at
 `
 
 type CreateOrganizationMemberParams struct {
@@ -27,75 +65,156 @@ type CreateOrganizationMemberRow struct {
 	OrganizationID uuid.UUID `json:"organization_id"`
 	UserID         uuid.UUID `json:"user_id"`
 	Role           string    `json:"role"`
+	JoinedAt       time.Time `json:"joined_at"`
 }
 
 func (q *Queries) CreateOrganizationMember(ctx context.Context, arg CreateOrganizationMemberParams) (CreateOrganizationMemberRow, error) {
 	row := q.db.QueryRow(ctx, createOrganizationMember, arg.OrganizationID, arg.UserID, arg.Role)
 	var i CreateOrganizationMemberRow
-	err := row.Scan(&i.OrganizationID, &i.UserID, &i.Role)
-	return i, err
-}
-
-const getOrganization = `-- name: GetOrganization :one
-SELECT m.organization_id, m.role, o.name, o.type
-FROM organization_members m
-         JOIN organizations o ON o.id = m.organization_id
-WHERE m.user_id = $1
-  AND m.organization_id = $2
-  AND m.deleted_at IS NULL
-  AND o.deleted_at IS NULL
-`
-
-type GetOrganizationParams struct {
-	UserID         uuid.UUID `json:"user_id"`
-	OrganizationID uuid.UUID `json:"organization_id"`
-}
-
-type GetOrganizationRow struct {
-	OrganizationID uuid.UUID `json:"organization_id"`
-	Role           string    `json:"role"`
-	Name           string    `json:"name"`
-	Type           string    `json:"type"`
-}
-
-func (q *Queries) GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error) {
-	row := q.db.QueryRow(ctx, getOrganization, arg.UserID, arg.OrganizationID)
-	var i GetOrganizationRow
 	err := row.Scan(
 		&i.OrganizationID,
+		&i.UserID,
 		&i.Role,
-		&i.Name,
-		&i.Type,
+		&i.JoinedAt,
 	)
 	return i, err
 }
 
-const listUserOrganization = `-- name: ListUserOrganization :many
-SELECT m.organization_id, m.role, o.name, o.type
+const getUserOrganization = `-- name: GetUserOrganization :one
+SELECT
+    m.organization_id,
+    m.user_id,
+    u.name AS user_name,
+    u.email,
+    m.role,
+    m.joined_at,
+    o.name AS organization_name,
+    o.type AS organization_type
 FROM organization_members m
-         JOIN organizations o ON o.id = m.organization_id
+         JOIN organizations o
+              ON o.id = m.organization_id
+         JOIN users u
+              ON u.id = m.user_id
+WHERE m.user_id = $1
+  AND m.organization_id = $2
+  AND m.deleted_at IS NULL
+  AND o.deleted_at IS NULL
+  AND u.deleted_at IS NULL
+`
+
+type GetUserOrganizationParams struct {
+	UserID         uuid.UUID `json:"user_id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+}
+
+type GetUserOrganizationRow struct {
+	OrganizationID   uuid.UUID `json:"organization_id"`
+	UserID           uuid.UUID `json:"user_id"`
+	UserName         string    `json:"user_name"`
+	Email            string    `json:"email"`
+	Role             string    `json:"role"`
+	JoinedAt         time.Time `json:"joined_at"`
+	OrganizationName string    `json:"organization_name"`
+	OrganizationType string    `json:"organization_type"`
+}
+
+func (q *Queries) GetUserOrganization(ctx context.Context, arg GetUserOrganizationParams) (GetUserOrganizationRow, error) {
+	row := q.db.QueryRow(ctx, getUserOrganization, arg.UserID, arg.OrganizationID)
+	var i GetUserOrganizationRow
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.UserID,
+		&i.UserName,
+		&i.Email,
+		&i.Role,
+		&i.JoinedAt,
+		&i.OrganizationName,
+		&i.OrganizationType,
+	)
+	return i, err
+}
+
+const listOrganizationMembers = `-- name: ListOrganizationMembers :many
+SELECT
+    m.user_id,
+    u.name,
+    u.email,
+    m.role,
+    m.joined_at
+FROM organization_members m
+         JOIN users u
+              ON u.id = m.user_id
+WHERE m.organization_id = $1
+  AND m.deleted_at IS NULL
+  AND u.deleted_at IS NULL
+ORDER BY m.joined_at
+`
+
+type ListOrganizationMembersRow struct {
+	UserID   uuid.UUID `json:"user_id"`
+	Name     string    `json:"name"`
+	Email    string    `json:"email"`
+	Role     string    `json:"role"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+func (q *Queries) ListOrganizationMembers(ctx context.Context, organizationID uuid.UUID) ([]ListOrganizationMembersRow, error) {
+	rows, err := q.db.Query(ctx, listOrganizationMembers, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOrganizationMembersRow{}
+	for rows.Next() {
+		var i ListOrganizationMembersRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Name,
+			&i.Email,
+			&i.Role,
+			&i.JoinedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserOrganizations = `-- name: ListUserOrganizations :many
+SELECT
+    m.organization_id,
+    m.role,
+    o.name,
+    o.type
+FROM organization_members m
+         JOIN organizations o
+              ON o.id = m.organization_id
 WHERE m.user_id = $1
   AND m.deleted_at IS NULL
   AND o.deleted_at IS NULL
 ORDER BY m.joined_at
 `
 
-type ListUserOrganizationRow struct {
+type ListUserOrganizationsRow struct {
 	OrganizationID uuid.UUID `json:"organization_id"`
 	Role           string    `json:"role"`
 	Name           string    `json:"name"`
 	Type           string    `json:"type"`
 }
 
-func (q *Queries) ListUserOrganization(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationRow, error) {
-	rows, err := q.db.Query(ctx, listUserOrganization, userID)
+func (q *Queries) ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error) {
+	rows, err := q.db.Query(ctx, listUserOrganizations, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListUserOrganizationRow{}
+	items := []ListUserOrganizationsRow{}
 	for rows.Next() {
-		var i ListUserOrganizationRow
+		var i ListUserOrganizationsRow
 		if err := rows.Scan(
 			&i.OrganizationID,
 			&i.Role,
@@ -110,4 +229,47 @@ func (q *Queries) ListUserOrganization(ctx context.Context, userID uuid.UUID) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const softDeleteOrganizationMember = `-- name: SoftDeleteOrganizationMember :execrows
+UPDATE organization_members
+SET deleted_at = now()
+WHERE organization_id = $1
+  AND user_id = $2
+  AND deleted_at IS NULL
+`
+
+type SoftDeleteOrganizationMemberParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) SoftDeleteOrganizationMember(ctx context.Context, arg SoftDeleteOrganizationMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteOrganizationMember, arg.OrganizationID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateOrganizationMemberRole = `-- name: UpdateOrganizationMemberRole :execrows
+UPDATE organization_members
+SET role = $1
+WHERE organization_id = $2
+  AND user_id = $3
+  AND deleted_at IS NULL
+`
+
+type UpdateOrganizationMemberRoleParams struct {
+	Role           string    `json:"role"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) UpdateOrganizationMemberRole(ctx context.Context, arg UpdateOrganizationMemberRoleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateOrganizationMemberRole, arg.Role, arg.OrganizationID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

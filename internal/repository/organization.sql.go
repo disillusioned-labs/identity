@@ -7,14 +7,18 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const createOrganization = `-- name: CreateOrganization :one
-INSERT INTO organizations (name, type)
-VALUES ($1, $2)
-    RETURNING id, name, type
+INSERT INTO organizations (name,
+                           type)
+VALUES ($1, $2) RETURNING
+    id,
+    name,
+    type
 `
 
 type CreateOrganizationParams struct {
@@ -31,6 +35,121 @@ type CreateOrganizationRow struct {
 func (q *Queries) CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (CreateOrganizationRow, error) {
 	row := q.db.QueryRow(ctx, createOrganization, arg.Name, arg.Type)
 	var i CreateOrganizationRow
+	err := row.Scan(&i.ID, &i.Name, &i.Type)
+	return i, err
+}
+
+const getOrganization = `-- name: GetOrganization :one
+SELECT o.id,
+       o.name,
+       o.type
+FROM organizations o
+         JOIN organization_members m
+              ON m.organization_id = o.id
+WHERE o.id = $1
+  AND m.user_id = $2
+  AND o.deleted_at IS NULL
+  AND m.deleted_at IS NULL
+`
+
+type GetOrganizationParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+type GetOrganizationRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	Type string    `json:"type"`
+}
+
+func (q *Queries) GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error) {
+	row := q.db.QueryRow(ctx, getOrganization, arg.ID, arg.UserID)
+	var i GetOrganizationRow
+	err := row.Scan(&i.ID, &i.Name, &i.Type)
+	return i, err
+}
+
+const getOrganizationMember = `-- name: GetOrganizationMember :one
+SELECT m.user_id,
+       u.name,
+       u.email,
+       m.role,
+       m.joined_at
+FROM organization_members m
+         JOIN users u
+              ON u.id = m.user_id
+WHERE m.organization_id = $1
+  AND m.user_id = $2
+  AND m.deleted_at IS NULL
+  AND u.deleted_at IS NULL
+`
+
+type GetOrganizationMemberParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+type GetOrganizationMemberRow struct {
+	UserID   uuid.UUID `json:"user_id"`
+	Name     string    `json:"name"`
+	Email    string    `json:"email"`
+	Role     string    `json:"role"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+func (q *Queries) GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error) {
+	row := q.db.QueryRow(ctx, getOrganizationMember, arg.OrganizationID, arg.UserID)
+	var i GetOrganizationMemberRow
+	err := row.Scan(
+		&i.UserID,
+		&i.Name,
+		&i.Email,
+		&i.Role,
+		&i.JoinedAt,
+	)
+	return i, err
+}
+
+const softDeleteOrganization = `-- name: SoftDeleteOrganization :execrows
+UPDATE organizations
+SET deleted_at = now()
+WHERE id = $1
+  AND deleted_at IS NULL
+`
+
+func (q *Queries) SoftDeleteOrganization(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteOrganization, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateOrganization = `-- name: UpdateOrganization :one
+UPDATE organizations
+SET name = $1
+WHERE id = $2
+  AND deleted_at IS NULL RETURNING
+    id,
+    name,
+    type
+`
+
+type UpdateOrganizationParams struct {
+	Name string    `json:"name"`
+	ID   uuid.UUID `json:"id"`
+}
+
+type UpdateOrganizationRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	Type string    `json:"type"`
+}
+
+func (q *Queries) UpdateOrganization(ctx context.Context, arg UpdateOrganizationParams) (UpdateOrganizationRow, error) {
+	row := q.db.QueryRow(ctx, updateOrganization, arg.Name, arg.ID)
+	var i UpdateOrganizationRow
 	err := row.Scan(&i.ID, &i.Name, &i.Type)
 	return i, err
 }

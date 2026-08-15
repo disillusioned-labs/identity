@@ -10,6 +10,8 @@ import (
 	"github.com/disillusioned-labs/authkit"
 	"github.com/disillusioned-labs/identity/internal/handler"
 	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
+	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
+	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
@@ -41,6 +43,19 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 		return server.Deps{}, fmt.Errorf("decode auth master key: %w", err)
 	}
 
+	authErrorHandler := func(
+		w http.ResponseWriter,
+		_ *http.Request,
+		_ error,
+	) {
+		handler.WriteError(
+			w,
+			http.StatusUnauthorized,
+			handler.CodeUnauthorized,
+			"unauthorized",
+		)
+	}
+
 	auth := authservice.NewAuthService(
 		repo,
 		masterKey,
@@ -55,18 +70,15 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 		log,
 	)
 
-	authErrorHandler := func(
-		w http.ResponseWriter,
-		_ *http.Request,
-		_ error,
-	) {
-		handler.WriteError(
-			w,
-			http.StatusUnauthorized,
-			handler.CodeUnauthorized,
-			"unauthorized",
-		)
-	}
+	organizationService := organizationservice.NewOrganizationService(
+		repo,
+		log,
+	)
+
+	organizationMemberService := organizationmemberservice.NewOrganizationMemberService(
+		repo,
+		log,
+	)
 
 	verifier := authkit.New(
 		authkit.Config{
@@ -80,11 +92,13 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 	)
 
 	return server.Deps{
-		AuthService:   auth,
-		JwksService:   jwksService,
-		Verifier:      verifier,
-		Pool:          pool,
-		Redis:         rdb,
-		RedisRequired: redisRequired,
+		AuthService:               auth,
+		JwksService:               jwksService,
+		OrganizationService:       organizationService,
+		OrganizationMemberService: organizationMemberService,
+		Verifier:                  verifier,
+		Pool:                      pool,
+		Redis:                     rdb,
+		RedisRequired:             redisRequired,
 	}, nil
 }

@@ -48,7 +48,11 @@ var (
 	ErrConflict        = NewError("CONFLICT", http.StatusConflict, "conflicts with existing data")
 	ErrInternal        = NewError("INTERNAL", http.StatusInternalServerError, "internal server error")
 
-	ErrEmailTaken = NewError("EMAIL_TAKEN", http.StatusConflict, "email already taken")
+	ErrEmailTaken              = NewError("EMAIL_TAKEN", http.StatusConflict, "email already taken")
+	ErrLastOwnerCannotLeave    = NewError("LAST_OWNER_CANNOT_LEAVE", http.StatusForbidden, "last owner cannot leave")
+	ErrInvalidRole             = NewError("INVALID_ROLE", http.StatusBadRequest, "invalid organization member role")
+	ErrCannotModifySelf        = NewError("CANNOT_MODIFY_SELF", http.StatusBadRequest, "cannot modify your own organization membership")
+	ErrInvalidOrganizationType = NewError("INVALID_ORGANIZATION_TYPE", http.StatusBadRequest, "invalid organization type")
 )
 
 const pgUniqueViolation = "23505"

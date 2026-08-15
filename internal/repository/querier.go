@@ -11,22 +11,31 @@ import (
 )
 
 type Querier interface {
+	CountActiveOrganizationMembers(ctx context.Context, organizationID uuid.UUID) (int64, error)
+	CountActiveOrganizationOwners(ctx context.Context, organizationID uuid.UUID) (int64, error)
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (CreateOrganizationRow, error)
 	CreateOrganizationMember(ctx context.Context, arg CreateOrganizationMemberParams) (CreateOrganizationMemberRow, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (CreateRefreshTokenRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
 	GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error)
+	GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (GetRefreshTokenByHashRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error)
+	GetUserOrganization(ctx context.Context, arg GetUserOrganizationParams) (GetUserOrganizationRow, error)
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	ListActiveSigningKeys(ctx context.Context) ([]ListActiveSigningKeysRow, error)
-	ListUserOrganization(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationRow, error)
+	ListOrganizationMembers(ctx context.Context, organizationID uuid.UUID) ([]ListOrganizationMembersRow, error)
+	ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) (int64, error)
 	RotateSigningKey(ctx context.Context) error
 	SetLastActiveOrganization(ctx context.Context, arg SetLastActiveOrganizationParams) (int64, error)
+	SoftDeleteOrganization(ctx context.Context, id uuid.UUID) (int64, error)
+	SoftDeleteOrganizationMember(ctx context.Context, arg SoftDeleteOrganizationMemberParams) (int64, error)
+	UpdateOrganization(ctx context.Context, arg UpdateOrganizationParams) (UpdateOrganizationRow, error)
+	UpdateOrganizationMemberRole(ctx context.Context, arg UpdateOrganizationMemberRoleParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

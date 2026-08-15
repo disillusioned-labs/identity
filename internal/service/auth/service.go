@@ -88,8 +88,8 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 		tokens       tokens
 	)
 
-	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
-		user, err = querier.CreateUser(ctx, repository.CreateUserParams{
+	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		user, err = q.CreateUser(ctx, repository.CreateUserParams{
 			Email:    input.Email,
 			Password: string(hash),
 			Name:     input.Name,
@@ -102,7 +102,7 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			return err
 		}
 
-		organization, err = querier.CreateOrganization(ctx, repository.CreateOrganizationParams{
+		organization, err = q.CreateOrganization(ctx, repository.CreateOrganizationParams{
 			Name: "Personal " + input.Name,
 			Type: constant.OrganizationTypePersonal,
 		})
@@ -110,22 +110,26 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			return err
 		}
 
-		if _, err := querier.CreateOrganizationMember(ctx, repository.CreateOrganizationMemberParams{
+		_, err = q.CreateOrganizationMember(ctx, repository.CreateOrganizationMemberParams{
 			OrganizationID: organization.ID,
 			UserID:         user.ID,
 			Role:           constant.RoleOwner,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 
-		if _, err := querier.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
+		_, err = q.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
 			ID:                       user.ID,
 			LastActiveOrganizationID: &organization.ID,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 
-		tokens, err = s.issueTokens(ctx, querier, issueParams{
+		// insert to audit logs
+
+		tokens, err = s.issueTokens(ctx, q, issueParams{
 			UserID:         user.ID,
 			OrganizationID: organization.ID,
 			Role:           constant.RoleOwner,
@@ -142,8 +146,8 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 	}
 
 	span.SetAttributes(
-		attribute.String("user.id", user.ID.String()),
 		attribute.String("organization.id", organization.ID.String()),
+		attribute.String("user.id", user.ID.String()),
 	)
 
 	return RegisterOutput{
@@ -183,7 +187,7 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		return LoginOutput{}, service.ErrUnauthenticated
 	}
 
-	memberships, err := s.repo.ListUserOrganization(ctx, user.ID)
+	memberships, err := s.repo.ListUserOrganizations(ctx, user.ID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query user memberships failed")
@@ -232,6 +236,8 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		return LoginOutput{}, service.ErrInternal
 	}
 
+	// insert to audit logs
+
 	return LoginOutput{
 		User: UserOutput{
 			ID:    user.ID,
@@ -264,7 +270,7 @@ func (s *authService) Me(ctx context.Context, input MeInput) (MeOutput, error) {
 		return MeOutput{}, service.ErrInternal
 	}
 
-	listUserOrganization, err := s.repo.ListUserOrganization(ctx, input.UserID)
+	listUserOrganization, err := s.repo.ListUserOrganizations(ctx, input.UserID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query list user organization failed")
@@ -343,7 +349,7 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			return service.ErrUnauthenticated
 		}
 
-		membership, err := querier.GetOrganization(ctx, repository.GetOrganizationParams{
+		membership, err := querier.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
 			UserID:         user.ID,
 			OrganizationID: *user.LastActiveOrganizationID,
 		})
@@ -471,9 +477,9 @@ func (s *authService) loadSigningKey(ctx context.Context, querier repository.Que
 }
 
 func selectActiveOrganization(
-	memberships []repository.ListUserOrganizationRow,
+	memberships []repository.ListUserOrganizationsRow,
 	preferred *uuid.UUID,
-) repository.ListUserOrganizationRow {
+) repository.ListUserOrganizationsRow {
 	if preferred != nil {
 		for _, m := range memberships {
 			if m.OrganizationID == *preferred {
