@@ -2,6 +2,7 @@ package auth
 
 import "github.com/google/uuid"
 
+// Register
 type RegisterInput struct {
 	Name      string
 	Email     string
@@ -16,6 +17,7 @@ type RegisterOutput struct {
 	Tokens       TokensOutput
 }
 
+// Login
 type LoginInput struct {
 	Email     string
 	Password  string
@@ -29,6 +31,31 @@ type LoginOutput struct {
 	Tokens       TokensOutput
 }
 
+// Me
+type MeInput struct {
+	UserID uuid.UUID
+}
+
+type MeOutput struct {
+	User                 MeUserOutput
+	ActiveOrganizationId *uuid.UUID
+	Organizations        []MeOrganizationOutput
+}
+
+type MeUserOutput struct {
+	ID    uuid.UUID
+	Name  string
+	Email string
+}
+
+type MeOrganizationOutput struct {
+	ID   uuid.UUID
+	Name string
+	Type string
+	Role string
+}
+
+// Refresh
 type RefreshInput struct {
 	RefreshToken string
 	UserAgent    string

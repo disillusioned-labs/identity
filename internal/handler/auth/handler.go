@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -100,7 +101,7 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
-	ctx, span := tracer.Start(r.Context(), "AuthHandler.refresh")
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.me")
 	defer span.End()
 	r = r.WithContext(ctx)
 
@@ -115,7 +116,29 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handler.WriteJSON(w, http.StatusOK, claims)
+	userId, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid claim subject")
+		handler.WriteError(
+			w,
+			http.StatusUnauthorized,
+			handler.CodeUnauthorized,
+			"unauthorized",
+		)
+		return
+	}
+
+	meInput := authservice.MeInput{
+		UserID: userId,
+	}
+
+	meOutput, err := h.service.Me(ctx, meInput)
+	if err != nil {
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+
+	handler.WriteJSON(w, http.StatusOK, toMeResponse(meOutput))
 }
 
 func clientIP(r *http.Request) string {

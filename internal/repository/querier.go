@@ -16,13 +16,13 @@ type Querier interface {
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (CreateRefreshTokenRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
-	GetMembership(ctx context.Context, arg GetMembershipParams) (GetMembershipRow, error)
+	GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (GetRefreshTokenByHashRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error)
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	ListActiveSigningKeys(ctx context.Context) ([]ListActiveSigningKeysRow, error)
-	ListUserMemberships(ctx context.Context, userID uuid.UUID) ([]ListUserMembershipsRow, error)
+	ListUserOrganization(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationRow, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) (int64, error)
 	RotateSigningKey(ctx context.Context) error

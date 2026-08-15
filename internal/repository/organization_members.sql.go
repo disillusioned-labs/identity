@@ -36,7 +36,7 @@ func (q *Queries) CreateOrganizationMember(ctx context.Context, arg CreateOrgani
 	return i, err
 }
 
-const getMembership = `-- name: GetMembership :one
+const getOrganization = `-- name: GetOrganization :one
 SELECT m.organization_id, m.role, o.name, o.type
 FROM organization_members m
          JOIN organizations o ON o.id = m.organization_id
@@ -46,21 +46,21 @@ WHERE m.user_id = $1
   AND o.deleted_at IS NULL
 `
 
-type GetMembershipParams struct {
+type GetOrganizationParams struct {
 	UserID         uuid.UUID `json:"user_id"`
 	OrganizationID uuid.UUID `json:"organization_id"`
 }
 
-type GetMembershipRow struct {
+type GetOrganizationRow struct {
 	OrganizationID uuid.UUID `json:"organization_id"`
 	Role           string    `json:"role"`
 	Name           string    `json:"name"`
 	Type           string    `json:"type"`
 }
 
-func (q *Queries) GetMembership(ctx context.Context, arg GetMembershipParams) (GetMembershipRow, error) {
-	row := q.db.QueryRow(ctx, getMembership, arg.UserID, arg.OrganizationID)
-	var i GetMembershipRow
+func (q *Queries) GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error) {
+	row := q.db.QueryRow(ctx, getOrganization, arg.UserID, arg.OrganizationID)
+	var i GetOrganizationRow
 	err := row.Scan(
 		&i.OrganizationID,
 		&i.Role,
@@ -70,7 +70,7 @@ func (q *Queries) GetMembership(ctx context.Context, arg GetMembershipParams) (G
 	return i, err
 }
 
-const listUserMemberships = `-- name: ListUserMemberships :many
+const listUserOrganization = `-- name: ListUserOrganization :many
 SELECT m.organization_id, m.role, o.name, o.type
 FROM organization_members m
          JOIN organizations o ON o.id = m.organization_id
@@ -80,22 +80,22 @@ WHERE m.user_id = $1
 ORDER BY m.joined_at
 `
 
-type ListUserMembershipsRow struct {
+type ListUserOrganizationRow struct {
 	OrganizationID uuid.UUID `json:"organization_id"`
 	Role           string    `json:"role"`
 	Name           string    `json:"name"`
 	Type           string    `json:"type"`
 }
 
-func (q *Queries) ListUserMemberships(ctx context.Context, userID uuid.UUID) ([]ListUserMembershipsRow, error) {
-	rows, err := q.db.Query(ctx, listUserMemberships, userID)
+func (q *Queries) ListUserOrganization(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationRow, error) {
+	rows, err := q.db.Query(ctx, listUserOrganization, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListUserMembershipsRow{}
+	items := []ListUserOrganizationRow{}
 	for rows.Next() {
-		var i ListUserMembershipsRow
+		var i ListUserOrganizationRow
 		if err := rows.Scan(
 			&i.OrganizationID,
 			&i.Role,

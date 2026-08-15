@@ -28,6 +28,7 @@ var tracer = otel.Tracer("service/auth")
 type AuthService interface {
 	Register(ctx context.Context, input RegisterInput) (RegisterOutput, error)
 	Login(ctx context.Context, input LoginInput) (LoginOutput, error)
+	Me(ctx context.Context, input MeInput) (MeOutput, error)
 	Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error)
 }
 
@@ -61,6 +62,17 @@ func NewAuthService(
 func (s *authService) Register(ctx context.Context, input RegisterInput) (RegisterOutput, error) {
 	ctx, span := tracer.Start(ctx, "AuthService.Register")
 	defer span.End()
+
+	_, err := s.repo.GetUserByEmail(ctx, input.Email)
+	if err == nil {
+		return RegisterOutput{}, service.ErrEmailTaken
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query user by email failed")
+		s.log.ErrorContext(ctx, "query user by email failed", "error", err)
+		return RegisterOutput{}, service.ErrInternal
+	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -171,7 +183,7 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		return LoginOutput{}, service.ErrUnauthenticated
 	}
 
-	memberships, err := s.repo.ListUserMemberships(ctx, user.ID)
+	memberships, err := s.repo.ListUserOrganization(ctx, user.ID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query user memberships failed")
@@ -236,6 +248,51 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 	}, nil
 }
 
+func (s *authService) Me(ctx context.Context, input MeInput) (MeOutput, error) {
+	ctx, span := tracer.Start(ctx, "AuthService.Me")
+	defer span.End()
+
+	user, err := s.repo.GetUserByID(ctx, input.UserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "user not found")
+			return MeOutput{}, service.ErrUnauthenticated
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query get user by id failed")
+		s.log.ErrorContext(ctx, "query get user by id failed", "error", err)
+		return MeOutput{}, service.ErrInternal
+	}
+
+	listUserOrganization, err := s.repo.ListUserOrganization(ctx, input.UserID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query list user organization failed")
+		s.log.ErrorContext(ctx, "query list user organization failed", "error", err)
+		return MeOutput{}, service.ErrInternal
+	}
+
+	var organizationOutput []MeOrganizationOutput
+	for _, organizationRow := range listUserOrganization {
+		organizationOutput = append(organizationOutput, MeOrganizationOutput{
+			ID:   organizationRow.OrganizationID,
+			Name: organizationRow.Name,
+			Type: organizationRow.Type,
+			Role: organizationRow.Role,
+		})
+	}
+
+	return MeOutput{
+		User: MeUserOutput{
+			ID:    user.ID,
+			Name:  user.Name,
+			Email: user.Email,
+		},
+		ActiveOrganizationId: user.LastActiveOrganizationID,
+		Organizations:        organizationOutput,
+	}, nil
+}
+
 func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error) {
 	ctx, span := tracer.Start(ctx, "AuthService.Refresh")
 	defer span.End()
@@ -286,7 +343,7 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			return service.ErrUnauthenticated
 		}
 
-		membership, err := querier.GetMembership(ctx, repository.GetMembershipParams{
+		membership, err := querier.GetOrganization(ctx, repository.GetOrganizationParams{
 			UserID:         user.ID,
 			OrganizationID: *user.LastActiveOrganizationID,
 		})
@@ -414,9 +471,9 @@ func (s *authService) loadSigningKey(ctx context.Context, querier repository.Que
 }
 
 func selectActiveOrganization(
-	memberships []repository.ListUserMembershipsRow,
+	memberships []repository.ListUserOrganizationRow,
 	preferred *uuid.UUID,
-) repository.ListUserMembershipsRow {
+) repository.ListUserOrganizationRow {
 	if preferred != nil {
 		for _, m := range memberships {
 			if m.OrganizationID == *preferred {
