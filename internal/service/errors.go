@@ -53,6 +53,11 @@ var (
 	ErrInvalidRole             = NewError("INVALID_ROLE", http.StatusBadRequest, "invalid organization member role")
 	ErrCannotModifySelf        = NewError("CANNOT_MODIFY_SELF", http.StatusBadRequest, "cannot modify your own organization membership")
 	ErrInvalidOrganizationType = NewError("INVALID_ORGANIZATION_TYPE", http.StatusBadRequest, "invalid organization type")
+
+	ErrInvitationExpired         = NewError("INVITATION_EXPIRED", http.StatusGone, "invitation has expired")
+	ErrInvitationRevoked         = NewError("INVITATION_REVOKED", http.StatusGone, "invitation has been revoked")
+	ErrInvitationAlreadyAccepted = NewError("INVITATION_ALREADY_ACCEPTED", http.StatusConflict, "invitation has already been accepted")
+	ErrInvalidEmail              = NewError("INVALID_EMAIL", http.StatusBadRequest, "invalid email address")
 )
 
 const pgUniqueViolation = "23505"

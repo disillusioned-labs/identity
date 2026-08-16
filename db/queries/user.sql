@@ -15,6 +15,13 @@ FROM users
 WHERE id = $1
   AND deleted_at IS NULL;
 
+-- name: UserExistsByEmail :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users
+    WHERE lower(email) = lower($1)
+);
+
 -- name: SetLastActiveOrganization :execrows
 UPDATE users
 SET last_active_organization_id = $2

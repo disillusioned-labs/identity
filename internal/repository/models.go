@@ -44,6 +44,16 @@ type OrganizationMember struct {
 	DeletedAt      pgtype.Timestamptz `json:"deleted_at"`
 }
 
+type OutboxEvent struct {
+	ID            uuid.UUID          `json:"id"`
+	EventType     string             `json:"event_type"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	Payload       []byte             `json:"payload"`
+	CreatedAt     time.Time          `json:"created_at"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+}
+
 type RefreshToken struct {
 	ID         uuid.UUID          `json:"id"`
 	UserID     uuid.UUID          `json:"user_id"`

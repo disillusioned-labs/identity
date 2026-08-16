@@ -45,6 +45,7 @@ func (s *organizationMemberService) ListOrganizationMembers(ctx context.Context,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "user is not an organization member")
 			return ListOrganizationMembersOutput{}, service.ErrNotFound
 		}
 
@@ -93,7 +94,9 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(ctx context.Con
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrCannotModifySelf
 	}
 
-	if input.Role != constant.RoleOwner && input.Role != constant.RoleAdmin && input.Role != constant.RoleMember {
+	if input.Role != constant.RoleOwner &&
+		input.Role != constant.RoleAdmin &&
+		input.Role != constant.RoleMember {
 		span.SetStatus(codes.Error, "invalid organization member role")
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrInvalidRole
 	}
@@ -104,6 +107,7 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(ctx context.Con
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "current user is not an organization member")
 			return UpdateOrganizationMemberRoleOutput{}, service.ErrNotFound
 		}
 
@@ -113,12 +117,14 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(ctx context.Con
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrInternal
 	}
 
-	if currentMember.Role != constant.RoleOwner && currentMember.Role != constant.RoleAdmin {
+	if currentMember.Role != constant.RoleOwner &&
+		currentMember.Role != constant.RoleAdmin {
 		span.SetStatus(codes.Error, "insufficient organization role")
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrForbidden
 	}
 
-	if currentMember.Role == constant.RoleAdmin && input.Role == constant.RoleOwner {
+	if currentMember.Role == constant.RoleAdmin &&
+		input.Role == constant.RoleOwner {
 		span.SetStatus(codes.Error, "admin cannot assign owner role")
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrForbidden
 	}
@@ -129,6 +135,7 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(ctx context.Con
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "target user is not an organization member")
 			return UpdateOrganizationMemberRoleOutput{}, service.ErrNotFound
 		}
 
@@ -138,12 +145,14 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(ctx context.Con
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrInternal
 	}
 
-	if currentMember.Role == constant.RoleAdmin && targetMember.Role == constant.RoleOwner {
+	if currentMember.Role == constant.RoleAdmin &&
+		targetMember.Role == constant.RoleOwner {
 		span.SetStatus(codes.Error, "admin cannot modify owner")
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrForbidden
 	}
 
-	if targetMember.Role == constant.RoleOwner && input.Role != constant.RoleOwner {
+	if targetMember.Role == constant.RoleOwner &&
+		input.Role != constant.RoleOwner {
 		ownerCount, err := s.repo.CountActiveOrganizationOwners(ctx, input.OrganizationID)
 		if err != nil {
 			span.RecordError(err)
@@ -171,6 +180,7 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(ctx context.Con
 	}
 
 	if rows == 0 {
+		span.SetStatus(codes.Error, "organization member role update affected no rows")
 		return UpdateOrganizationMemberRoleOutput{}, service.ErrNotFound
 	}
 
@@ -180,6 +190,7 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(ctx context.Con
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "updated organization member not found")
 			return UpdateOrganizationMemberRoleOutput{}, service.ErrNotFound
 		}
 
@@ -223,6 +234,7 @@ func (s *organizationMemberService) RemoveOrganizationMember(ctx context.Context
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "current user is not an organization member")
 			return RemoveOrganizationMemberOutput{}, service.ErrNotFound
 		}
 
@@ -232,7 +244,9 @@ func (s *organizationMemberService) RemoveOrganizationMember(ctx context.Context
 		return RemoveOrganizationMemberOutput{}, service.ErrInternal
 	}
 
-	if currentMember.Role != constant.RoleOwner && currentMember.Role != constant.RoleAdmin {
+	if currentMember.Role != constant.RoleOwner &&
+		currentMember.Role != constant.RoleAdmin {
+		span.SetStatus(codes.Error, "insufficient organization role")
 		return RemoveOrganizationMemberOutput{}, service.ErrForbidden
 	}
 
@@ -242,6 +256,7 @@ func (s *organizationMemberService) RemoveOrganizationMember(ctx context.Context
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "target user is not an organization member")
 			return RemoveOrganizationMemberOutput{}, service.ErrNotFound
 		}
 
@@ -251,7 +266,9 @@ func (s *organizationMemberService) RemoveOrganizationMember(ctx context.Context
 		return RemoveOrganizationMemberOutput{}, service.ErrInternal
 	}
 
-	if currentMember.Role == constant.RoleAdmin && targetMember.Role == constant.RoleOwner {
+	if currentMember.Role == constant.RoleAdmin &&
+		targetMember.Role == constant.RoleOwner {
+		span.SetStatus(codes.Error, "admin cannot remove owner")
 		return RemoveOrganizationMemberOutput{}, service.ErrForbidden
 	}
 
@@ -274,6 +291,7 @@ func (s *organizationMemberService) RemoveOrganizationMember(ctx context.Context
 			}
 
 			if memberCount > 1 {
+				span.SetStatus(codes.Error, "last owner cannot leave organization")
 				return RemoveOrganizationMemberOutput{}, service.ErrLastOwnerCannotLeave
 			}
 		}
@@ -291,6 +309,7 @@ func (s *organizationMemberService) RemoveOrganizationMember(ctx context.Context
 	}
 
 	if rows == 0 {
+		span.SetStatus(codes.Error, "organization member removal affected no rows")
 		return RemoveOrganizationMemberOutput{}, service.ErrNotFound
 	}
 
@@ -315,6 +334,7 @@ func (s *organizationMemberService) LeaveOrganization(ctx context.Context, input
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "current user is not an organization member")
 			return LeaveOrganizationOutput{}, service.ErrNotFound
 		}
 
@@ -392,6 +412,7 @@ func (s *organizationMemberService) LeaveOrganization(ctx context.Context, input
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				span.SetStatus(codes.Error, "organization membership or organization not found")
 				return LeaveOrganizationOutput{}, service.ErrNotFound
 			}
 
@@ -494,17 +515,13 @@ func (s *organizationMemberService) LeaveOrganization(ctx context.Context, input
 			})
 			if err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
+					span.SetStatus(codes.Error, "organization membership or organization not found")
 					return LeaveOrganizationOutput{}, service.ErrNotFound
 				}
 
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "leave organization failed")
-				s.log.ErrorContext(
-					ctx,
-					"leave organization failed",
-					"error",
-					err,
-				)
+				s.log.ErrorContext(ctx, "leave organization failed", "error", err)
 				return LeaveOrganizationOutput{}, service.ErrInternal
 			}
 
@@ -529,6 +546,7 @@ func (s *organizationMemberService) LeaveOrganization(ctx context.Context, input
 	}
 
 	if rows == 0 {
+		span.SetStatus(codes.Error, "organization member leave affected no rows")
 		return LeaveOrganizationOutput{}, service.ErrNotFound
 	}
 

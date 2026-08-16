@@ -11,24 +11,34 @@ import (
 )
 
 type Querier interface {
+	AcceptInvitation(ctx context.Context, arg AcceptInvitationParams) (int64, error)
 	CountActiveOrganizationMembers(ctx context.Context, organizationID uuid.UUID) (int64, error)
 	CountActiveOrganizationOwners(ctx context.Context, organizationID uuid.UUID) (int64, error)
+	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (OrganizationInvitation, error)
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (CreateOrganizationRow, error)
 	CreateOrganizationMember(ctx context.Context, arg CreateOrganizationMemberParams) (CreateOrganizationMemberRow, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (CreateRefreshTokenRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	ExpireInvitation(ctx context.Context, id uuid.UUID) (int64, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
+	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (GetInvitationByTokenHashRow, error)
 	GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error)
+	GetOrganizationInvitation(ctx context.Context, id uuid.UUID) (OrganizationInvitation, error)
 	GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error)
+	GetPendingOrganizationInvitation(ctx context.Context, arg GetPendingOrganizationInvitationParams) (OrganizationInvitation, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (GetRefreshTokenByHashRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error)
 	GetUserOrganization(ctx context.Context, arg GetUserOrganizationParams) (GetUserOrganizationRow, error)
+	GetUserOrganizationByEmail(ctx context.Context, arg GetUserOrganizationByEmailParams) (GetUserOrganizationByEmailRow, error)
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	ListActiveSigningKeys(ctx context.Context) ([]ListActiveSigningKeysRow, error)
+	ListInvitations(ctx context.Context, organizationID uuid.UUID) ([]ListInvitationsRow, error)
+	ListMyPendingOrganizationInvitations(ctx context.Context, lower string) ([]ListMyPendingOrganizationInvitationsRow, error)
 	ListOrganizationMembers(ctx context.Context, organizationID uuid.UUID) ([]ListOrganizationMembersRow, error)
 	ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error)
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) (int64, error)
+	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) (int64, error)
 	RotateSigningKey(ctx context.Context) error
 	SetLastActiveOrganization(ctx context.Context, arg SetLastActiveOrganizationParams) (int64, error)
@@ -36,6 +46,7 @@ type Querier interface {
 	SoftDeleteOrganizationMember(ctx context.Context, arg SoftDeleteOrganizationMemberParams) (int64, error)
 	UpdateOrganization(ctx context.Context, arg UpdateOrganizationParams) (UpdateOrganizationRow, error)
 	UpdateOrganizationMemberRole(ctx context.Context, arg UpdateOrganizationMemberRoleParams) (int64, error)
+	UserExistsByEmail(ctx context.Context, lower string) (bool, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -36,6 +36,7 @@ func (h *OrganizationHandler) listOrganizations(w http.ResponseWriter, r *http.R
 
 	userID, ok := userIDFromClaims(w, r)
 	if !ok {
+		span.SetStatus(codes.Error, "get user id from claims failed")
 		return
 	}
 
@@ -43,6 +44,7 @@ func (h *OrganizationHandler) listOrganizations(w http.ResponseWriter, r *http.R
 		UserID: userID,
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, "list organizations failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
@@ -59,6 +61,7 @@ func (h *OrganizationHandler) createOrganization(w http.ResponseWriter, r *http.
 
 	userID, ok := userIDFromClaims(w, r)
 	if !ok {
+		span.SetStatus(codes.Error, "get user id from claims failed")
 		return
 	}
 
@@ -73,14 +76,12 @@ func (h *OrganizationHandler) createOrganization(w http.ResponseWriter, r *http.
 		Name:   strings.TrimSpace(req.Name),
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, "create organization failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", output.Organization.ID.String()),
-		attribute.String("user.id", userID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", output.Organization.ID.String()), attribute.String("user.id", userID.String()))
 
 	handler.OK(w, http.StatusCreated, toCreateResponse(output))
 }
@@ -92,18 +93,15 @@ func (h *OrganizationHandler) getOrganization(w http.ResponseWriter, r *http.Req
 
 	userID, ok := userIDFromClaims(w, r)
 	if !ok {
+		span.SetStatus(codes.Error, "get user id from claims failed")
 		return
 	}
 
 	organizationID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
+		span.RecordError(err)
 		span.SetStatus(codes.Error, "invalid organization id")
-		handler.WriteError(
-			w,
-			http.StatusBadRequest,
-			handler.CodeBadRequest,
-			"invalid organization id",
-		)
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid organization id")
 		return
 	}
 
@@ -112,14 +110,12 @@ func (h *OrganizationHandler) getOrganization(w http.ResponseWriter, r *http.Req
 		OrganizationID: organizationID,
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, "get organization failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organizationID.String()),
-		attribute.String("user.id", userID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()))
 
 	handler.OK(w, http.StatusOK, toGetResponse(output))
 }
@@ -131,18 +127,15 @@ func (h *OrganizationHandler) updateOrganization(w http.ResponseWriter, r *http.
 
 	userID, ok := userIDFromClaims(w, r)
 	if !ok {
+		span.SetStatus(codes.Error, "get user id from claims failed")
 		return
 	}
 
 	organizationID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
+		span.RecordError(err)
 		span.SetStatus(codes.Error, "invalid organization id")
-		handler.WriteError(
-			w,
-			http.StatusBadRequest,
-			handler.CodeBadRequest,
-			"invalid organization id",
-		)
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid organization id")
 		return
 	}
 
@@ -158,14 +151,12 @@ func (h *OrganizationHandler) updateOrganization(w http.ResponseWriter, r *http.
 		Name:           strings.TrimSpace(req.Name),
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, "update organization failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organizationID.String()),
-		attribute.String("user.id", userID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()))
 
 	handler.OK(w, http.StatusOK, toUpdateResponse(output))
 }
@@ -177,18 +168,15 @@ func (h *OrganizationHandler) deleteOrganization(w http.ResponseWriter, r *http.
 
 	userID, ok := userIDFromClaims(w, r)
 	if !ok {
+		span.SetStatus(codes.Error, "get user id from claims failed")
 		return
 	}
 
 	organizationID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
+		span.RecordError(err)
 		span.SetStatus(codes.Error, "invalid organization id")
-		handler.WriteError(
-			w,
-			http.StatusBadRequest,
-			handler.CodeBadRequest,
-			"invalid organization id",
-		)
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid organization id")
 		return
 	}
 
@@ -197,14 +185,12 @@ func (h *OrganizationHandler) deleteOrganization(w http.ResponseWriter, r *http.
 		OrganizationID: organizationID,
 	})
 	if err != nil {
+		span.SetStatus(codes.Error, "delete organization failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organizationID.String()),
-		attribute.String("user.id", userID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()))
 
 	handler.OK(w, http.StatusOK, toDeleteResponse(output))
 }
@@ -212,23 +198,12 @@ func (h *OrganizationHandler) deleteOrganization(w http.ResponseWriter, r *http.
 func userIDFromClaims(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	claims, ok := handler.ClaimsFrom(r.Context())
 	if !ok {
-		handler.WriteError(
-			w,
-			http.StatusUnauthorized,
-			handler.CodeUnauthorized,
-			"unauthorized",
-		)
+		handler.WriteError(w, http.StatusUnauthorized, handler.CodeUnauthorized, "unauthorized")
 		return uuid.Nil, false
 	}
 
 	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
-		handler.WriteError(
-			w,
-			http.StatusUnauthorized,
-			handler.CodeUnauthorized,
-			"unauthorized",
-		)
 		return uuid.Nil, false
 	}
 

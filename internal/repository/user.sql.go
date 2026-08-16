@@ -115,3 +115,18 @@ func (q *Queries) SetLastActiveOrganization(ctx context.Context, arg SetLastActi
 	}
 	return result.RowsAffected(), nil
 }
+
+const userExistsByEmail = `-- name: UserExistsByEmail :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users
+    WHERE lower(email) = lower($1)
+)
+`
+
+func (q *Queries) UserExistsByEmail(ctx context.Context, lower string) (bool, error) {
+	row := q.db.QueryRow(ctx, userExistsByEmail, lower)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}

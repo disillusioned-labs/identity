@@ -137,6 +137,7 @@ func (s *organizationService) GetOrganization(ctx context.Context, input GetInpu
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "organization not found")
 			return GetOutput{}, service.ErrNotFound
 		}
 
@@ -171,6 +172,7 @@ func (s *organizationService) UpdateOrganization(ctx context.Context, input Upda
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "current organization member not found")
 			return UpdateOutput{}, service.ErrNotFound
 		}
 
@@ -181,6 +183,7 @@ func (s *organizationService) UpdateOrganization(ctx context.Context, input Upda
 	}
 
 	if currentMember.Role != constant.RoleOwner && currentMember.Role != constant.RoleAdmin {
+		span.SetStatus(codes.Error, "insufficient organization role")
 		return UpdateOutput{}, service.ErrForbidden
 	}
 
@@ -222,6 +225,7 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "current organization member not found")
 			return DeleteOutput{}, service.ErrNotFound
 		}
 
@@ -272,6 +276,7 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				span.SetStatus(codes.Error, "organization not found")
 				return DeleteOutput{}, service.ErrNotFound
 			}
 
@@ -300,6 +305,7 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 	}
 
 	if rows == 0 {
+		span.SetStatus(codes.Error, "organization not found")
 		return DeleteOutput{}, service.ErrNotFound
 	}
 

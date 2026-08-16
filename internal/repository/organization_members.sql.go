@@ -134,6 +134,60 @@ func (q *Queries) GetUserOrganization(ctx context.Context, arg GetUserOrganizati
 	return i, err
 }
 
+const getUserOrganizationByEmail = `-- name: GetUserOrganizationByEmail :one
+SELECT
+    m.organization_id,
+    m.user_id,
+    u.name AS user_name,
+    u.email,
+    m.role,
+    m.joined_at,
+    o.name AS organization_name,
+    o.type AS organization_type
+FROM organization_members m
+         JOIN organizations o
+              ON o.id = m.organization_id
+         JOIN users u
+              ON u.id = m.user_id
+WHERE m.organization_id = $1
+  AND u.email = $2
+  AND m.deleted_at IS NULL
+  AND o.deleted_at IS NULL
+  AND u.deleted_at IS NULL
+`
+
+type GetUserOrganizationByEmailParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	Email          string    `json:"email"`
+}
+
+type GetUserOrganizationByEmailRow struct {
+	OrganizationID   uuid.UUID `json:"organization_id"`
+	UserID           uuid.UUID `json:"user_id"`
+	UserName         string    `json:"user_name"`
+	Email            string    `json:"email"`
+	Role             string    `json:"role"`
+	JoinedAt         time.Time `json:"joined_at"`
+	OrganizationName string    `json:"organization_name"`
+	OrganizationType string    `json:"organization_type"`
+}
+
+func (q *Queries) GetUserOrganizationByEmail(ctx context.Context, arg GetUserOrganizationByEmailParams) (GetUserOrganizationByEmailRow, error) {
+	row := q.db.QueryRow(ctx, getUserOrganizationByEmail, arg.OrganizationID, arg.Email)
+	var i GetUserOrganizationByEmailRow
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.UserID,
+		&i.UserName,
+		&i.Email,
+		&i.Role,
+		&i.JoinedAt,
+		&i.OrganizationName,
+		&i.OrganizationType,
+	)
+	return i, err
+}
+
 const listOrganizationMembers = `-- name: ListOrganizationMembers :many
 SELECT
     m.user_id,

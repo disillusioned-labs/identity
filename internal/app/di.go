@@ -11,6 +11,7 @@ import (
 	"github.com/disillusioned-labs/identity/internal/handler"
 	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
+	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -80,6 +81,11 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 		log,
 	)
 
+	organizationInvitationService := organizationinvitationservice.NewOrganizationInvitationService(
+		repo,
+		log,
+	)
+
 	verifier := authkit.New(
 		authkit.Config{
 			Issuer: authCfg.Issuer,
@@ -92,13 +98,14 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 	)
 
 	return server.Deps{
-		AuthService:               auth,
-		JwksService:               jwksService,
-		OrganizationService:       organizationService,
-		OrganizationMemberService: organizationMemberService,
-		Verifier:                  verifier,
-		Pool:                      pool,
-		Redis:                     rdb,
-		RedisRequired:             redisRequired,
+		AuthService:                   auth,
+		JwksService:                   jwksService,
+		OrganizationService:           organizationService,
+		OrganizationMemberService:     organizationMemberService,
+		OrganizationInvitationService: organizationInvitationService,
+		Verifier:                      verifier,
+		Pool:                          pool,
+		Redis:                         rdb,
+		RedisRequired:                 redisRequired,
 	}, nil
 }

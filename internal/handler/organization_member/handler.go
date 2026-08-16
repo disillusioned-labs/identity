@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/disillusioned-labs/identity/internal/handler"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
@@ -38,12 +39,12 @@ func (h *OrganizationMemberHandler) listOrganizationMembers(
 	defer span.End()
 	r = r.WithContext(ctx)
 
-	userID, ok := userIDFromClaims(w, r)
+	userID, ok := userIDFromClaims(w, r, span)
 	if !ok {
 		return
 	}
 
-	organizationID, ok := parseOrganizationID(w, r)
+	organizationID, ok := parseOrganizationID(w, r, span)
 	if !ok {
 		return
 	}
@@ -56,14 +57,12 @@ func (h *OrganizationMemberHandler) listOrganizationMembers(
 		},
 	)
 	if err != nil {
+		span.SetStatus(codes.Error, "list organization members failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organizationID.String()),
-		attribute.String("user.id", userID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()))
 
 	handler.OK(
 		w,
@@ -80,17 +79,17 @@ func (h *OrganizationMemberHandler) updateOrganizationMemberRole(
 	defer span.End()
 	r = r.WithContext(ctx)
 
-	userID, ok := userIDFromClaims(w, r)
+	userID, ok := userIDFromClaims(w, r, span)
 	if !ok {
 		return
 	}
 
-	organizationID, ok := parseOrganizationID(w, r)
+	organizationID, ok := parseOrganizationID(w, r, span)
 	if !ok {
 		return
 	}
 
-	targetUserID, ok := parseTargetUserID(w, r)
+	targetUserID, ok := parseTargetUserID(w, r, span)
 	if !ok {
 		return
 	}
@@ -111,15 +110,12 @@ func (h *OrganizationMemberHandler) updateOrganizationMemberRole(
 		},
 	)
 	if err != nil {
+		span.SetStatus(codes.Error, "update organization member role failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organizationID.String()),
-		attribute.String("user.id", userID.String()),
-		attribute.String("target_user.id", targetUserID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()), attribute.String("target_user.id", targetUserID.String()))
 
 	handler.OK(
 		w,
@@ -136,17 +132,17 @@ func (h *OrganizationMemberHandler) removeOrganizationMember(
 	defer span.End()
 	r = r.WithContext(ctx)
 
-	userID, ok := userIDFromClaims(w, r)
+	userID, ok := userIDFromClaims(w, r, span)
 	if !ok {
 		return
 	}
 
-	organizationID, ok := parseOrganizationID(w, r)
+	organizationID, ok := parseOrganizationID(w, r, span)
 	if !ok {
 		return
 	}
 
-	targetUserID, ok := parseTargetUserID(w, r)
+	targetUserID, ok := parseTargetUserID(w, r, span)
 	if !ok {
 		return
 	}
@@ -160,15 +156,12 @@ func (h *OrganizationMemberHandler) removeOrganizationMember(
 		},
 	)
 	if err != nil {
+		span.SetStatus(codes.Error, "remove organization member failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organizationID.String()),
-		attribute.String("user.id", userID.String()),
-		attribute.String("target_user.id", targetUserID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()), attribute.String("target_user.id", targetUserID.String()))
 
 	handler.OK(
 		w,
@@ -185,12 +178,12 @@ func (h *OrganizationMemberHandler) leaveOrganization(
 	defer span.End()
 	r = r.WithContext(ctx)
 
-	userID, ok := userIDFromClaims(w, r)
+	userID, ok := userIDFromClaims(w, r, span)
 	if !ok {
 		return
 	}
 
-	organizationID, ok := parseOrganizationID(w, r)
+	organizationID, ok := parseOrganizationID(w, r, span)
 	if !ok {
 		return
 	}
@@ -203,14 +196,12 @@ func (h *OrganizationMemberHandler) leaveOrganization(
 		},
 	)
 	if err != nil {
+		span.SetStatus(codes.Error, "leave organization failed")
 		handler.WriteServiceError(w, r, h.log, err)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organizationID.String()),
-		attribute.String("user.id", userID.String()),
-	)
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()))
 
 	handler.OK(
 		w,
@@ -222,26 +213,20 @@ func (h *OrganizationMemberHandler) leaveOrganization(
 func userIDFromClaims(
 	w http.ResponseWriter,
 	r *http.Request,
+	span trace.Span,
 ) (uuid.UUID, bool) {
 	claims, ok := handler.ClaimsFrom(r.Context())
 	if !ok {
-		handler.WriteError(
-			w,
-			http.StatusUnauthorized,
-			handler.CodeUnauthorized,
-			"unauthorized",
-		)
+		span.SetStatus(codes.Error, "get claims failed")
+		handler.WriteError(w, http.StatusUnauthorized, handler.CodeUnauthorized, "unauthorized")
 		return uuid.Nil, false
 	}
 
 	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
-		handler.WriteError(
-			w,
-			http.StatusUnauthorized,
-			handler.CodeUnauthorized,
-			"unauthorized",
-		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid user id in claims")
+		handler.WriteError(w, http.StatusUnauthorized, handler.CodeUnauthorized, "unauthorized")
 		return uuid.Nil, false
 	}
 
@@ -251,15 +236,13 @@ func userIDFromClaims(
 func parseOrganizationID(
 	w http.ResponseWriter,
 	r *http.Request,
+	span trace.Span,
 ) (uuid.UUID, bool) {
 	organizationID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		handler.WriteError(
-			w,
-			http.StatusBadRequest,
-			handler.CodeBadRequest,
-			"invalid organization id",
-		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid organization id")
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid organization id")
 		return uuid.Nil, false
 	}
 
@@ -269,15 +252,13 @@ func parseOrganizationID(
 func parseTargetUserID(
 	w http.ResponseWriter,
 	r *http.Request,
+	span trace.Span,
 ) (uuid.UUID, bool) {
 	targetUserID, err := uuid.Parse(r.PathValue("user_id"))
 	if err != nil {
-		handler.WriteError(
-			w,
-			http.StatusBadRequest,
-			handler.CodeBadRequest,
-			"invalid user id",
-		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid target user id")
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid user id")
 		return uuid.Nil, false
 	}
 
