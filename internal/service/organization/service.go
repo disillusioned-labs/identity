@@ -2,12 +2,14 @@ package organization
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -15,6 +17,11 @@ import (
 )
 
 var tracer = otel.Tracer("service/organization")
+
+const (
+	organizationAggregateType = "organization"
+	organizationEventVersion  = 1
+)
 
 type OrganizationService interface {
 	ListOrganizations(ctx context.Context, input ListInput) (ListOutput, error)
@@ -30,10 +37,7 @@ type organizationService struct {
 }
 
 func NewOrganizationService(repo repository.Store, log *slog.Logger) OrganizationService {
-	return &organizationService{
-		repo: repo,
-		log:  log,
-	}
+	return &organizationService{repo: repo, log: log}
 }
 
 func (s *organizationService) ListOrganizations(ctx context.Context, input ListInput) (ListOutput, error) {
@@ -44,12 +48,11 @@ func (s *organizationService) ListOrganizations(ctx context.Context, input ListI
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "list organizations failed")
-		s.log.ErrorContext(ctx, "list organizations failed", "error", err)
+		s.log.ErrorContext(ctx, "list organizations failed", "error", err, "user_id", input.UserID)
 		return ListOutput{}, service.ErrInternal
 	}
 
 	organizations := make([]OrganizationOutput, 0, len(organizationRows))
-
 	for _, organizationRow := range organizationRows {
 		organizations = append(organizations, OrganizationOutput{
 			ID:   organizationRow.OrganizationID,
@@ -61,19 +64,22 @@ func (s *organizationService) ListOrganizations(ctx context.Context, input ListI
 
 	span.SetAttributes(
 		attribute.String("user.id", input.UserID.String()),
+		attribute.Int("organization.count", len(organizations)),
 	)
 
-	return ListOutput{
-		Organizations: organizations,
-	}, nil
+	return ListOutput{Organizations: organizations}, nil
 }
 
 func (s *organizationService) CreateOrganization(ctx context.Context, input CreateInput) (CreateOutput, error) {
 	ctx, span := tracer.Start(ctx, "OrganizationService.CreateOrganization")
 	defer span.End()
 
-	if input.Type != constant.OrganizationTypePersonal &&
-		input.Type != constant.OrganizationTypeBusiness {
+	span.SetAttributes(
+		attribute.String("user.id", input.UserID.String()),
+		attribute.String("organization.type", input.Type),
+	)
+
+	if input.Type != constant.OrganizationTypePersonal && input.Type != constant.OrganizationTypeBusiness {
 		span.SetStatus(codes.Error, "invalid organization type")
 		return CreateOutput{}, service.ErrInvalidOrganizationType
 	}
@@ -100,22 +106,28 @@ func (s *organizationService) CreateOrganization(ctx context.Context, input Crea
 			return err
 		}
 
-		// insert to audit logs
+		event := OrganizationCreatedEvent{
+			OrganizationID: organization.ID,
+			UserID:         input.UserID,
+			Name:           organization.Name,
+			Type:           organization.Type,
+			Role:           constant.RoleOwner,
+		}
+		err = createOrganizationOutboxEvent(ctx, q, organization.ID, EventOrganizationCreated, event)
+		if err != nil {
+			return err
+		}
 
 		return nil
 	})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "create organization failed")
-		s.log.ErrorContext(ctx, "create organization failed", "error", err)
+		s.log.ErrorContext(ctx, "create organization failed", "error", err, "user_id", input.UserID, "organization_id", organization.ID)
 		return CreateOutput{}, service.ErrInternal
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.id", organization.ID.String()),
-		attribute.String("user.id", input.UserID.String()),
-		attribute.String("organization.type", organization.Type),
-	)
+	span.SetAttributes(attribute.String("organization.id", organization.ID.String()))
 
 	return CreateOutput{
 		Organization: OrganizationOutput{
@@ -143,13 +155,15 @@ func (s *organizationService) GetOrganization(ctx context.Context, input GetInpu
 
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "get organization failed")
-		s.log.ErrorContext(ctx, "get organization failed", "error", err)
+		s.log.ErrorContext(ctx, "get organization failed", "error", err, "user_id", input.UserID, "organization_id", input.OrganizationID)
 		return GetOutput{}, service.ErrInternal
 	}
 
 	span.SetAttributes(
-		attribute.String("organization.id", input.OrganizationID.String()),
+		attribute.String("organization.id", organization.OrganizationID.String()),
 		attribute.String("user.id", input.UserID.String()),
+		attribute.String("organization.type", organization.OrganizationType),
+		attribute.String("organization.role", organization.Role),
 	)
 
 	return GetOutput{
@@ -166,51 +180,89 @@ func (s *organizationService) UpdateOrganization(ctx context.Context, input Upda
 	ctx, span := tracer.Start(ctx, "OrganizationService.UpdateOrganization")
 	defer span.End()
 
-	currentMember, err := s.repo.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
-		UserID:         input.UserID,
-		OrganizationID: input.OrganizationID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			span.SetStatus(codes.Error, "current organization member not found")
-			return UpdateOutput{}, service.ErrNotFound
-		}
-
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "get current organization member failed")
-		s.log.ErrorContext(ctx, "get current organization member failed", "error", err)
-		return UpdateOutput{}, service.ErrInternal
-	}
-
-	if currentMember.Role != constant.RoleOwner && currentMember.Role != constant.RoleAdmin {
-		span.SetStatus(codes.Error, "insufficient organization role")
-		return UpdateOutput{}, service.ErrForbidden
-	}
-
-	organization, err := s.repo.UpdateOrganization(ctx, repository.UpdateOrganizationParams{
-		Name: input.Name,
-		ID:   input.OrganizationID,
-	})
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "update organization failed")
-		s.log.ErrorContext(ctx, "update organization failed", "error", err)
-		return UpdateOutput{}, service.ErrInternal
-	}
-
-	// insert to audit logs
-
 	span.SetAttributes(
 		attribute.String("organization.id", input.OrganizationID.String()),
 		attribute.String("user.id", input.UserID.String()),
 	)
 
+	var (
+		organizationID   uuid.UUID
+		organizationName string
+		organizationType string
+		memberRole       string
+	)
+
+	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		currentMember, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.UserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return service.ErrNotFound
+			}
+			return err
+		}
+
+		if currentMember.Role != constant.RoleOwner && currentMember.Role != constant.RoleAdmin {
+			return service.ErrForbidden
+		}
+
+		organization, err := q.UpdateOrganization(ctx, repository.UpdateOrganizationParams{
+			Name: input.Name,
+			ID:   input.OrganizationID,
+		})
+		if err != nil {
+			return err
+		}
+
+		organizationID = organization.ID
+		organizationName = organization.Name
+		organizationType = organization.Type
+		memberRole = currentMember.Role
+
+		event := OrganizationUpdatedEvent{
+			OrganizationID: organization.ID,
+			UserID:         input.UserID,
+			Name:           organization.Name,
+			Type:           organization.Type,
+			Role:           currentMember.Role,
+		}
+		err = createOrganizationOutboxEvent(ctx, q, organization.ID, EventOrganizationUpdated, event)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			span.SetStatus(codes.Error, "organization member not found")
+			return UpdateOutput{}, service.ErrNotFound
+		}
+
+		if errors.Is(err, service.ErrForbidden) {
+			span.SetStatus(codes.Error, "insufficient organization role")
+			return UpdateOutput{}, service.ErrForbidden
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "update organization failed")
+		s.log.ErrorContext(ctx, "update organization failed", "error", err, "user_id", input.UserID, "organization_id", input.OrganizationID)
+		return UpdateOutput{}, service.ErrInternal
+	}
+
+	span.SetAttributes(
+		attribute.String("organization.type", organizationType),
+		attribute.String("organization.role", memberRole),
+	)
+
 	return UpdateOutput{
 		Organization: OrganizationOutput{
-			ID:   organization.ID,
-			Name: organization.Name,
-			Type: organization.Type,
-			Role: currentMember.Role,
+			ID:   organizationID,
+			Name: organizationName,
+			Type: organizationType,
+			Role: memberRole,
 		},
 	}, nil
 }
@@ -219,41 +271,45 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 	ctx, span := tracer.Start(ctx, "OrganizationService.DeleteOrganization")
 	defer span.End()
 
-	currentMember, err := s.repo.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
-		UserID:         input.UserID,
-		OrganizationID: input.OrganizationID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			span.SetStatus(codes.Error, "current organization member not found")
-			return DeleteOutput{}, service.ErrNotFound
+	span.SetAttributes(
+		attribute.String("organization.id", input.OrganizationID.String()),
+		attribute.String("user.id", input.UserID.String()),
+	)
+
+	var (
+		organizationType string
+		replacementID    *uuid.UUID
+	)
+
+	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		currentMember, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.UserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return service.ErrNotFound
+			}
+			return err
 		}
 
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "get current organization member failed")
-		s.log.ErrorContext(ctx, "get current organization member failed", "error", err)
-		return DeleteOutput{}, service.ErrInternal
-	}
+		if currentMember.Role != constant.RoleOwner {
+			return service.ErrForbidden
+		}
 
-	if currentMember.Role != constant.RoleOwner {
-		span.SetStatus(codes.Error, "only organization owner can delete organization")
-		return DeleteOutput{}, service.ErrForbidden
-	}
+		organizationType = currentMember.OrganizationType
 
-	if currentMember.OrganizationType == constant.OrganizationTypePersonal {
-		var newOrganization repository.CreateOrganizationRow
+		rows, err := q.SoftDeleteOrganization(ctx, input.OrganizationID)
+		if err != nil {
+			return err
+		}
 
-		err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
-			rows, err := q.SoftDeleteOrganization(ctx, input.OrganizationID)
-			if err != nil {
-				return err
-			}
+		if rows == 0 {
+			return pgx.ErrNoRows
+		}
 
-			if rows == 0 {
-				return pgx.ErrNoRows
-			}
-
-			newOrganization, err = q.CreateOrganization(ctx, repository.CreateOrganizationParams{
+		if organizationType == constant.OrganizationTypePersonal {
+			newOrganization, err := q.CreateOrganization(ctx, repository.CreateOrganizationParams{
 				Name: "Personal Organization",
 				Type: constant.OrganizationTypePersonal,
 			})
@@ -270,52 +326,68 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 				return err
 			}
 
-			// insert to audit logs
-
-			return nil
-		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				span.SetStatus(codes.Error, "organization not found")
-				return DeleteOutput{}, service.ErrNotFound
-			}
-
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "delete personal organization failed")
-			s.log.ErrorContext(ctx, "delete personal organization failed", "error", err)
-			return DeleteOutput{}, service.ErrInternal
+			replacementID = &newOrganization.ID
 		}
 
-		span.SetAttributes(
-			attribute.String("organization.id", input.OrganizationID.String()),
-			attribute.String("user.id", input.UserID.String()),
-			attribute.String("organization.type", constant.OrganizationTypePersonal),
-			attribute.String("replacement_organization.id", newOrganization.ID.String()),
-		)
+		event := OrganizationDeletedEvent{
+			OrganizationID:            input.OrganizationID,
+			UserID:                    input.UserID,
+			Type:                      organizationType,
+			ReplacementOrganizationID: replacementID,
+		}
+		err = createOrganizationOutboxEvent(ctx, q, input.OrganizationID, EventOrganizationDeleted, event)
+		if err != nil {
+			return err
+		}
 
-		return DeleteOutput{}, nil
-	}
-
-	rows, err := s.repo.SoftDeleteOrganization(ctx, input.OrganizationID)
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, service.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "organization not found")
+			return DeleteOutput{}, service.ErrNotFound
+		}
+
+		if errors.Is(err, service.ErrForbidden) {
+			span.SetStatus(codes.Error, "only organization owner can delete organization")
+			return DeleteOutput{}, service.ErrForbidden
+		}
+
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "delete organization failed")
-		s.log.ErrorContext(ctx, "delete organization failed", "error", err)
+		s.log.ErrorContext(ctx, "delete organization failed", "error", err, "user_id", input.UserID, "organization_id", input.OrganizationID)
 		return DeleteOutput{}, service.ErrInternal
 	}
 
-	if rows == 0 {
-		span.SetStatus(codes.Error, "organization not found")
-		return DeleteOutput{}, service.ErrNotFound
-	}
-
-	// insert to audit logs
-
 	span.SetAttributes(
-		attribute.String("organization.id", input.OrganizationID.String()),
-		attribute.String("user.id", input.UserID.String()),
-		attribute.String("organization.type", currentMember.OrganizationType),
+		attribute.String("organization.type", organizationType),
 	)
 
+	if replacementID != nil {
+		span.SetAttributes(attribute.String("replacement_organization.id", replacementID.String()))
+	}
+
 	return DeleteOutput{}, nil
+}
+
+func createOrganizationOutboxEvent(
+	ctx context.Context,
+	q repository.Querier,
+	aggregateID uuid.UUID,
+	eventType string,
+	event any,
+) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
+		AggregateType: organizationAggregateType,
+		AggregateID:   aggregateID,
+		EventType:     eventType,
+		EventVersion:  organizationEventVersion,
+		Payload:       payload,
+	})
+	return err
 }

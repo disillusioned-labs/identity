@@ -17,8 +17,10 @@ type Querier interface {
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (OrganizationInvitation, error)
 	CreateOrganization(ctx context.Context, arg CreateOrganizationParams) (CreateOrganizationRow, error)
 	CreateOrganizationMember(ctx context.Context, arg CreateOrganizationMemberParams) (CreateOrganizationMemberRow, error)
+	CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventParams) (OutboxEvent, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (CreateRefreshTokenRow, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	DeletePublishedOutboxEvents(ctx context.Context) (int64, error)
 	ExpireInvitation(ctx context.Context, id uuid.UUID) (int64, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
 	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (GetInvitationByTokenHashRow, error)
@@ -26,6 +28,7 @@ type Querier interface {
 	GetOrganizationInvitation(ctx context.Context, id uuid.UUID) (OrganizationInvitation, error)
 	GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error)
 	GetPendingOrganizationInvitation(ctx context.Context, arg GetPendingOrganizationInvitationParams) (OrganizationInvitation, error)
+	GetPendingOutboxEvents(ctx context.Context, limit int32) ([]OutboxEvent, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (GetRefreshTokenByHashRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error)
@@ -37,6 +40,10 @@ type Querier interface {
 	ListMyPendingOrganizationInvitations(ctx context.Context, lower string) ([]ListMyPendingOrganizationInvitationsRow, error)
 	ListOrganizationMembers(ctx context.Context, organizationID uuid.UUID) ([]ListOrganizationMembersRow, error)
 	ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error)
+	LockOutboxEvent(ctx context.Context, arg LockOutboxEventParams) error
+	MarkOutboxEventFailed(ctx context.Context, arg MarkOutboxEventFailedParams) error
+	MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error
+	ReleaseOutboxEventLock(ctx context.Context, id uuid.UUID) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) (int64, error)
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) (int64, error)

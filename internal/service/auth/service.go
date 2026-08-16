@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -25,6 +26,11 @@ import (
 
 var tracer = otel.Tracer("service/auth")
 
+const (
+	authAggregateType = "user"
+	authEventVersion  = 1
+)
+
 type AuthService interface {
 	Register(ctx context.Context, input RegisterInput) (RegisterOutput, error)
 	Login(ctx context.Context, input LoginInput) (LoginOutput, error)
@@ -41,14 +47,7 @@ type authService struct {
 	log             *slog.Logger
 }
 
-func NewAuthService(
-	repo repository.Store,
-	masterKey []byte,
-	accessTokenTTL time.Duration,
-	refreshTokenTTL time.Duration,
-	issuer string,
-	log *slog.Logger,
-) AuthService {
+func NewAuthService(repo repository.Store, masterKey []byte, accessTokenTTL time.Duration, refreshTokenTTL time.Duration, issuer string, log *slog.Logger) AuthService {
 	return &authService{
 		repo:            repo,
 		masterKey:       masterKey,
@@ -65,8 +64,10 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 
 	_, err := s.repo.GetUserByEmail(ctx, input.Email)
 	if err == nil {
+		span.SetStatus(codes.Error, "email already taken")
 		return RegisterOutput{}, service.ErrEmailTaken
 	}
+
 	if !errors.Is(err, pgx.ErrNoRows) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query user by email failed")
@@ -127,7 +128,26 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			return err
 		}
 
-		// insert to audit logs
+		event := UserRegisteredEvent{
+			UserID:         user.ID,
+			OrganizationID: organization.ID,
+			Email:          user.Email,
+			Name:           user.Name,
+			Role:           constant.RoleOwner,
+			UserAgent:      input.UserAgent,
+			IPAddress:      input.IPAddress,
+		}
+
+		err = createOutboxEvent(
+			ctx,
+			q,
+			user.ID,
+			EventUserRegistered,
+			event,
+		)
+		if err != nil {
+			return err
+		}
 
 		tokens, err = s.issueTokens(ctx, q, issueParams{
 			UserID:         user.ID,
@@ -139,15 +159,19 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrEmailTaken) {
+			return RegisterOutput{}, service.ErrEmailTaken
+		}
+
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "register transaction failed")
-		s.log.ErrorContext(ctx, "register transaction failed", "error", err)
+		s.log.ErrorContext(ctx, "register transaction failed", "error", err, "user_id", user.ID, "organization_id", organization.ID)
 		return RegisterOutput{}, service.ErrInternal
 	}
 
 	span.SetAttributes(
-		attribute.String("organization.id", organization.ID.String()),
 		attribute.String("user.id", user.ID.String()),
+		attribute.String("organization.id", organization.ID.String()),
 	)
 
 	return RegisterOutput{
@@ -173,9 +197,10 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 	user, err := s.repo.GetUserByEmail(ctx, input.Email)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			span.SetStatus(codes.Error, "no active user with that email")
+			span.SetStatus(codes.Error, "invalid credentials")
 			return LoginOutput{}, service.ErrUnauthenticated
 		}
+
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query user by email failed")
 		s.log.ErrorContext(ctx, "query user by email failed", "error", err)
@@ -183,7 +208,7 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		span.SetStatus(codes.Error, "password mismatch")
+		span.SetStatus(codes.Error, "invalid credentials")
 		return LoginOutput{}, service.ErrUnauthenticated
 	}
 
@@ -191,9 +216,10 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query user memberships failed")
-		s.log.ErrorContext(ctx, "query user memberships failed", "error", err)
+		s.log.ErrorContext(ctx, "query user memberships failed", "error", err, "user_id", user.ID)
 		return LoginOutput{}, service.ErrInternal
 	}
+
 	if len(memberships) == 0 {
 		span.SetStatus(codes.Error, "user has no active organization")
 		s.log.ErrorContext(ctx, "user has no active organization", "user_id", user.ID)
@@ -219,7 +245,6 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 			}
 		}
 
-		var err error
 		tokens, err = s.issueTokens(ctx, querier, issueParams{
 			UserID:         user.ID,
 			OrganizationID: active.OrganizationID,
@@ -227,16 +252,37 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 			UserAgent:      input.UserAgent,
 			IPAddress:      input.IPAddress,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+
+		event := UserLoggedInEvent{
+			UserID:         user.ID,
+			OrganizationID: active.OrganizationID,
+			Email:          user.Email,
+			UserAgent:      input.UserAgent,
+			IPAddress:      input.IPAddress,
+		}
+
+		err = createOutboxEvent(
+			ctx,
+			querier,
+			user.ID,
+			EventUserLoggedIn,
+			event,
+		)
+		if err != nil {
+			return err
+		}
+
+		return nil
 	})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "login transaction failed")
-		s.log.ErrorContext(ctx, "login transaction failed", "error", err)
+		s.log.ErrorContext(ctx, "login transaction failed", "error", err, "user_id", user.ID, "organization_id", active.OrganizationID)
 		return LoginOutput{}, service.ErrInternal
 	}
-
-	// insert to audit logs
 
 	return LoginOutput{
 		User: UserOutput{
@@ -264,9 +310,10 @@ func (s *authService) Me(ctx context.Context, input MeInput) (MeOutput, error) {
 			span.SetStatus(codes.Error, "user not found")
 			return MeOutput{}, service.ErrUnauthenticated
 		}
+
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query get user by id failed")
-		s.log.ErrorContext(ctx, "query get user by id failed", "error", err)
+		s.log.ErrorContext(ctx, "query get user by id failed", "error", err, "user_id", input.UserID)
 		return MeOutput{}, service.ErrInternal
 	}
 
@@ -274,9 +321,11 @@ func (s *authService) Me(ctx context.Context, input MeInput) (MeOutput, error) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query list user organization failed")
-		s.log.ErrorContext(ctx, "query list user organization failed", "error", err)
+		s.log.ErrorContext(ctx, "query list user organization failed", "error", err, "user_id", user.ID)
 		return MeOutput{}, service.ErrInternal
 	}
+
+	span.SetAttributes(attribute.String("user.id", user.ID.String()))
 
 	var organizationOutput []MeOrganizationOutput
 	for _, organizationRow := range listUserOrganization {
@@ -286,6 +335,10 @@ func (s *authService) Me(ctx context.Context, input MeInput) (MeOutput, error) {
 			Type: organizationRow.Type,
 			Role: organizationRow.Role,
 		})
+	}
+
+	if user.LastActiveOrganizationID != nil {
+		span.SetAttributes(attribute.String("organization.id", user.LastActiveOrganizationID.String()))
 	}
 
 	return MeOutput{
@@ -309,6 +362,7 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			span.SetStatus(codes.Error, "refresh token not found")
 			return RefreshOutput{}, service.ErrUnauthenticated
 		}
+
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query refresh token failed")
 		s.log.ErrorContext(ctx, "query refresh token failed", "error", err)
@@ -316,14 +370,15 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 	}
 
 	if stored.RevokedAt.Valid {
-		s.log.WarnContext(ctx, "revoked refresh token replayed, revoking every session",
-			"user_id", stored.UserID)
+		s.log.WarnContext(ctx, "revoked refresh token replayed, revoking every session", "user_id", stored.UserID)
+
 		if _, err := s.repo.RevokeAllUserRefreshTokens(ctx, stored.UserID); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "revoke all user refresh tokens failed")
-			s.log.ErrorContext(ctx, "revoke all user refresh tokens failed", "error", err)
+			s.log.ErrorContext(ctx, "revoke all user refresh tokens failed", "error", err, "user_id", stored.UserID)
 			return RefreshOutput{}, service.ErrInternal
 		}
+
 		span.SetStatus(codes.Error, "refresh token reuse detected")
 		return RefreshOutput{}, service.ErrUnauthenticated
 	}
@@ -342,8 +397,13 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 				span.SetStatus(codes.Error, "user no longer active")
 				return service.ErrUnauthenticated
 			}
+
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "query user by id failed")
+			s.log.ErrorContext(ctx, "query user by id failed", "error", err, "user_id", stored.UserID)
 			return err
 		}
+
 		if user.LastActiveOrganizationID == nil {
 			span.SetStatus(codes.Error, "user has no active organization")
 			return service.ErrUnauthenticated
@@ -358,22 +418,30 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 				span.SetStatus(codes.Error, "membership no longer active")
 				return service.ErrUnauthenticated
 			}
-			return err
-		}
 
-		revoked, err := querier.RevokeRefreshToken(ctx, stored.ID)
-		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "query user organization failed")
+			s.log.ErrorContext(ctx, "query user organization failed", "error", err, "user_id", user.ID, "organization_id", *user.LastActiveOrganizationID)
 			return err
-		}
-		if revoked == 0 {
-			span.SetStatus(codes.Error, "refresh token revoked concurrently")
-			return service.ErrUnauthenticated
 		}
 
 		span.SetAttributes(
 			attribute.String("user.id", user.ID.String()),
 			attribute.String("organization.id", membership.OrganizationID.String()),
 		)
+
+		revoked, err := querier.RevokeRefreshToken(ctx, stored.ID)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "revoke refresh token failed")
+			s.log.ErrorContext(ctx, "revoke refresh token failed", "error", err, "user_id", user.ID, "refresh_token_id", stored.ID)
+			return err
+		}
+
+		if revoked == 0 {
+			span.SetStatus(codes.Error, "refresh token revoked concurrently")
+			return service.ErrUnauthenticated
+		}
 
 		tokens, err = s.issueTokens(ctx, querier, issueParams{
 			UserID:         user.ID,
@@ -382,12 +450,42 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			UserAgent:      input.UserAgent,
 			IPAddress:      input.IPAddress,
 		})
-		return err
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "issue tokens failed")
+			s.log.ErrorContext(ctx, "issue tokens failed", "error", err, "user_id", user.ID, "organization_id", membership.OrganizationID)
+			return err
+		}
+
+		event := TokenRefreshedEvent{
+			UserID:         user.ID,
+			OrganizationID: membership.OrganizationID,
+			UserAgent:      input.UserAgent,
+			IPAddress:      input.IPAddress,
+		}
+
+		err = createOutboxEvent(
+			ctx,
+			querier,
+			user.ID,
+			EventTokenRefreshed,
+			event,
+		)
+		if err != nil {
+			return err
+		}
+
+		return nil
 	})
+
 	if err != nil {
+		if errors.Is(err, service.ErrUnauthenticated) {
+			return RefreshOutput{}, service.ErrUnauthenticated
+		}
+
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "refresh transaction failed")
-		s.log.ErrorContext(ctx, "refresh transaction failed", "error", err)
+		s.log.ErrorContext(ctx, "refresh transaction failed", "error", err, "user_id", stored.UserID)
 		return RefreshOutput{}, service.ErrInternal
 	}
 
@@ -411,13 +509,13 @@ func (s *authService) issueTokens(ctx context.Context, querier repository.Querie
 		ExpiresAt:      now.Add(s.accessTokenTTL),
 	})
 	if err != nil {
-		s.log.ErrorContext(ctx, "sign access token failed", "error", err)
+		s.log.ErrorContext(ctx, "sign access token failed", "error", err, "user_id", params.UserID, "organization_id", params.OrganizationID)
 		return tokens{}, service.ErrInternal
 	}
 
 	refreshToken, err := platformjwt.GenerateRefreshToken()
 	if err != nil {
-		s.log.ErrorContext(ctx, "generate refresh token failed", "error", err)
+		s.log.ErrorContext(ctx, "generate refresh token failed", "error", err, "user_id", params.UserID)
 		return tokens{}, service.ErrInternal
 	}
 
@@ -430,7 +528,10 @@ func (s *authService) issueTokens(ctx context.Context, querier repository.Querie
 
 	var userAgent pgtype.Text
 	if params.UserAgent != "" {
-		userAgent = pgtype.Text{String: params.UserAgent, Valid: true}
+		userAgent = pgtype.Text{
+			String: params.UserAgent,
+			Valid:  true,
+		}
 	}
 
 	if _, err := querier.CreateRefreshToken(ctx, repository.CreateRefreshTokenParams{
@@ -440,6 +541,7 @@ func (s *authService) issueTokens(ctx context.Context, querier repository.Querie
 		IpAddress: ipAddress,
 		ExpiresAt: now.Add(s.refreshTokenTTL),
 	}); err != nil {
+		s.log.ErrorContext(ctx, "create refresh token failed", "error", err, "user_id", params.UserID, "organization_id", params.OrganizationID)
 		return tokens{}, err
 	}
 
@@ -457,29 +559,27 @@ func (s *authService) loadSigningKey(ctx context.Context, querier repository.Que
 			s.log.ErrorContext(ctx, "no active signing key: seed one with cmd/generate-signing-key")
 			return nil, "", service.ErrInternal
 		}
+
 		s.log.ErrorContext(ctx, "load signing key failed", "error", err)
 		return nil, "", service.ErrInternal
 	}
 
 	privateKeyPEM, err := crypto.DecryptPrivateKey(row.PrivateKeyEncrypted, s.masterKey)
 	if err != nil {
-		s.log.ErrorContext(ctx, "decrypt signing key failed", "error", err)
+		s.log.ErrorContext(ctx, "decrypt signing key failed", "error", err, "kid", row.Kid)
 		return nil, "", service.ErrInternal
 	}
 
 	privateKey, err := platformjwt.ParsePrivateKey(privateKeyPEM)
 	if err != nil {
-		s.log.ErrorContext(ctx, "parse signing key failed", "error", err)
+		s.log.ErrorContext(ctx, "parse signing key failed", "error", err, "kid", row.Kid)
 		return nil, "", service.ErrInternal
 	}
 
 	return privateKey, row.Kid, nil
 }
 
-func selectActiveOrganization(
-	memberships []repository.ListUserOrganizationsRow,
-	preferred *uuid.UUID,
-) repository.ListUserOrganizationsRow {
+func selectActiveOrganization(memberships []repository.ListUserOrganizationsRow, preferred *uuid.UUID) repository.ListUserOrganizationsRow {
 	if preferred != nil {
 		for _, m := range memberships {
 			if m.OrganizationID == *preferred {
@@ -488,4 +588,26 @@ func selectActiveOrganization(
 		}
 	}
 	return memberships[0]
+}
+
+func createOutboxEvent(
+	ctx context.Context,
+	q repository.Querier,
+	aggregateID uuid.UUID,
+	eventType string,
+	event any,
+) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
+		AggregateType: authAggregateType,
+		AggregateID:   aggregateID,
+		EventType:     eventType,
+		EventVersion:  authEventVersion,
+		Payload:       payload,
+	})
+	return err
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -24,6 +25,11 @@ import (
 var tracer = otel.Tracer("service/organization_invitation")
 
 const invitationExpiration = 7 * 24 * time.Hour
+
+const (
+	organizationInvitationAggregateType = "organization_invitation"
+	organizationInvitationEventVersion  = 1
+)
 
 type OrganizationInvitationService interface {
 	ListMyInvitations(ctx context.Context, input ListMyInvitationsInput) (ListMyInvitationsOutput, error)
@@ -158,19 +164,9 @@ func (s *organizationInvitationService) CreateInvitation(ctx context.Context, in
 
 	now := time.Now()
 
-	if err == nil {
-		if pendingInvitation.ExpiresAt.After(now) {
-			span.SetStatus(codes.Error, "pending organization invitation already exists")
-			return CreateInvitationOutput{}, service.ErrConflict
-		}
-
-		_, err = s.repo.ExpireInvitation(ctx, pendingInvitation.ID)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "expire previous organization invitation failed")
-			s.log.ErrorContext(ctx, "expire previous organization invitation failed", "error", err)
-			return CreateInvitationOutput{}, service.ErrInternal
-		}
+	if err == nil && pendingInvitation.ExpiresAt.After(now) {
+		span.SetStatus(codes.Error, "pending organization invitation already exists")
+		return CreateInvitationOutput{}, service.ErrConflict
 	}
 
 	rawToken, err := generateInvitationToken()
@@ -181,13 +177,54 @@ func (s *organizationInvitationService) CreateInvitation(ctx context.Context, in
 		return CreateInvitationOutput{}, service.ErrInternal
 	}
 
-	invitation, err := s.repo.CreateInvitation(ctx, repository.CreateInvitationParams{
-		OrganizationID: input.OrganizationID,
-		Email:          input.Email,
-		Role:           input.Role,
-		TokenHash:      hashInvitationToken(rawToken),
-		InvitedBy:      input.UserID,
-		ExpiresAt:      now.Add(invitationExpiration),
+	expiresAt := now.Add(invitationExpiration)
+
+	var invitation repository.OrganizationInvitation
+
+	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		// Keep expiration and creation in the same transaction as the
+		// outbox event so they cannot partially succeed.
+		if err == nil {
+			_, txErr := q.ExpireInvitation(ctx, pendingInvitation.ID)
+			if txErr != nil {
+				return txErr
+			}
+		}
+
+		createdInvitation, txErr := q.CreateInvitation(ctx, repository.CreateInvitationParams{
+			OrganizationID: input.OrganizationID,
+			Email:          input.Email,
+			Role:           input.Role,
+			TokenHash:      hashInvitationToken(rawToken),
+			InvitedBy:      input.UserID,
+			ExpiresAt:      expiresAt,
+		})
+		if txErr != nil {
+			return txErr
+		}
+
+		event := OrganizationInvitationCreatedEvent{
+			InvitationID:   createdInvitation.ID,
+			OrganizationID: createdInvitation.OrganizationID,
+			Email:          createdInvitation.Email,
+			Role:           createdInvitation.Role,
+			InvitedBy:      createdInvitation.InvitedBy,
+			ExpiresAt:      createdInvitation.ExpiresAt.Format(time.RFC3339),
+		}
+
+		if txErr := createOrganizationInvitationOutboxEvent(
+			ctx,
+			q,
+			createdInvitation.ID,
+			EventOrganizationInvitationCreated,
+			event,
+		); txErr != nil {
+			return txErr
+		}
+
+		invitation = createdInvitation
+
+		return nil
 	})
 	if err != nil {
 		if service.IsUniqueViolation(err) {
@@ -196,18 +233,22 @@ func (s *organizationInvitationService) CreateInvitation(ctx context.Context, in
 		}
 
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "create organization invitation failed")
-		s.log.ErrorContext(ctx, "create organization invitation failed", "error", err)
+		span.SetStatus(codes.Error, "create organization invitation transaction failed")
+		s.log.ErrorContext(ctx, "create organization invitation transaction failed",
+			"error", err,
+			"organization_id", input.OrganizationID,
+			"user_id", input.UserID,
+			"event_type", EventOrganizationInvitationCreated,
+		)
 		return CreateInvitationOutput{}, service.ErrInternal
 	}
-
-	// insert to audit logs
-	// publish outbox event
 
 	span.SetAttributes(
 		attribute.String("organization.id", input.OrganizationID.String()),
 		attribute.String("user.id", input.UserID.String()),
 		attribute.String("invitation.id", invitation.ID.String()),
+		attribute.String("invitation.role", invitation.Role),
+		attribute.String("event.type", EventOrganizationInvitationCreated),
 	)
 
 	var acceptedAt *time.Time
@@ -351,6 +392,7 @@ func (s *organizationInvitationService) GetInvitation(ctx context.Context, input
 		},
 	}, nil
 }
+
 func (s *organizationInvitationService) AcceptInvitation(ctx context.Context, input AcceptInvitationInput) (AcceptInvitationOutput, error) {
 	ctx, span := tracer.Start(ctx, "OrganizationInvitationService.AcceptInvitation")
 	defer span.End()
@@ -473,8 +515,22 @@ func (s *organizationInvitationService) acceptInvitation(
 			return service.ErrConflict
 		}
 
-		// insert to audit logs
-		// publish outbox event
+		event := OrganizationInvitationAcceptedEvent{
+			InvitationID:   invitationID,
+			OrganizationID: organizationID,
+			UserID:         userID,
+			Role:           invitationRole,
+		}
+
+		if err := createOrganizationInvitationOutboxEvent(
+			ctx,
+			q,
+			invitationID,
+			EventOrganizationInvitationAccepted,
+			event,
+		); err != nil {
+			return err
+		}
 
 		return nil
 	})
@@ -499,6 +555,8 @@ func (s *organizationInvitationService) acceptInvitation(
 		attribute.String("organization.id", organizationID.String()),
 		attribute.String("invitation.id", invitationID.String()),
 		attribute.String("user.id", userID.String()),
+		attribute.String("invitation.role", invitationRole),
+		attribute.String("event.type", EventOrganizationInvitationAccepted),
 	)
 
 	return AcceptInvitationOutput{
@@ -532,29 +590,60 @@ func (s *organizationInvitationService) RevokeInvitation(ctx context.Context, in
 		return RevokeInvitationOutput{}, service.ErrForbidden
 	}
 
-	rows, err := s.repo.RevokeInvitation(ctx, repository.RevokeInvitationParams{
-		ID:             input.InvitationID,
-		OrganizationID: input.OrganizationID,
+	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		rows, err := q.RevokeInvitation(ctx, repository.RevokeInvitationParams{
+			ID:             input.InvitationID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			return err
+		}
+
+		if rows == 0 {
+			return service.ErrNotFound
+		}
+
+		event := OrganizationInvitationRevokedEvent{
+			InvitationID:   input.InvitationID,
+			OrganizationID: input.OrganizationID,
+			RevokedBy:      input.UserID,
+		}
+
+		if err := createOrganizationInvitationOutboxEvent(
+			ctx,
+			q,
+			input.InvitationID,
+			EventOrganizationInvitationRevoked,
+			event,
+		); err != nil {
+			return err
+		}
+
+		return nil
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			span.SetStatus(codes.Error, "organization invitation not found")
+			return RevokeInvitationOutput{}, service.ErrNotFound
+		}
+
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "revoke organization invitation failed")
-		s.log.ErrorContext(ctx, "revoke organization invitation failed", "error", err)
+		span.SetStatus(codes.Error, "revoke organization invitation transaction failed")
+		s.log.ErrorContext(ctx, "revoke organization invitation transaction failed",
+			"error", err,
+			"event_type", EventOrganizationInvitationRevoked,
+			"invitation_id", input.InvitationID,
+			"organization_id", input.OrganizationID,
+			"user_id", input.UserID,
+		)
 		return RevokeInvitationOutput{}, service.ErrInternal
 	}
-
-	if rows == 0 {
-		span.SetStatus(codes.Error, "organization invitation not found")
-		return RevokeInvitationOutput{}, service.ErrNotFound
-	}
-
-	// insert to audit logs
-	// publish outbox event
 
 	span.SetAttributes(
 		attribute.String("organization.id", input.OrganizationID.String()),
 		attribute.String("invitation.id", input.InvitationID.String()),
 		attribute.String("user.id", input.UserID.String()),
+		attribute.String("event.type", EventOrganizationInvitationRevoked),
 	)
 
 	return RevokeInvitationOutput{}, nil
@@ -594,6 +683,28 @@ func (s *organizationInvitationService) validateInvitation(ctx context.Context, 
 		span.SetStatus(codes.Error, "invalid organization invitation status")
 		return service.ErrInternal
 	}
+}
+
+func createOrganizationInvitationOutboxEvent(
+	ctx context.Context,
+	q repository.Querier,
+	aggregateID uuid.UUID,
+	eventType string,
+	event any,
+) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
+		AggregateType: organizationInvitationAggregateType,
+		AggregateID:   aggregateID,
+		EventType:     eventType,
+		EventVersion:  organizationInvitationEventVersion,
+		Payload:       payload,
+	})
+	return err
 }
 
 func normalizeEmail(email string) string {

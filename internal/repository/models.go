@@ -46,12 +46,18 @@ type OrganizationMember struct {
 
 type OutboxEvent struct {
 	ID            uuid.UUID          `json:"id"`
-	EventType     string             `json:"event_type"`
 	AggregateType string             `json:"aggregate_type"`
 	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	EventType     string             `json:"event_type"`
+	EventVersion  int32              `json:"event_version"`
 	Payload       []byte             `json:"payload"`
 	CreatedAt     time.Time          `json:"created_at"`
 	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	AttemptCount  int32              `json:"attempt_count"`
+	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
+	LockedAt      pgtype.Timestamptz `json:"locked_at"`
+	LockedBy      pgtype.Text        `json:"locked_by"`
+	LastError     pgtype.Text        `json:"last_error"`
 }
 
 type RefreshToken struct {
