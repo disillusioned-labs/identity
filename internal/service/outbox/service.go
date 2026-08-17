@@ -29,17 +29,20 @@ type outboxService struct {
 	repo     repository.Store
 	producer kafka.Producer
 	log      *slog.Logger
+	metrics  Metrics
 }
 
 func NewOutboxService(
 	repo repository.Store,
 	producer kafka.Producer,
 	log *slog.Logger,
+	metrics Metrics,
 ) OutboxService {
 	return &outboxService{
 		repo:     repo,
 		producer: producer,
 		log:      log,
+		metrics:  metrics,
 	}
 }
 
@@ -48,17 +51,9 @@ func (s *outboxService) PublishPending(
 	workerID string,
 	batchSize int,
 ) error {
-	ctx, span := tracer.Start(ctx, "OutboxService.PublishPending")
-	defer span.End()
-
 	if batchSize <= 0 {
 		batchSize = defaultBatchSize
 	}
-
-	span.SetAttributes(
-		attribute.String("outbox.worker_id", workerID),
-		attribute.Int("outbox.batch_size", batchSize),
-	)
 
 	events, err := s.repo.ClaimPendingOutboxEvents(
 		ctx,
@@ -71,12 +66,6 @@ func (s *outboxService) PublishPending(
 		},
 	)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(
-			codes.Error,
-			"claim pending outbox events failed",
-		)
-
 		s.log.ErrorContext(
 			ctx,
 			"claim pending outbox events failed",
@@ -86,6 +75,21 @@ func (s *outboxService) PublishPending(
 
 		return fmt.Errorf("claim pending outbox events: %w", err)
 	}
+
+	s.metrics.lastPollTimestamp.Record(ctx, time.Now().Unix())
+	s.metrics.eventsClaimed.Add(ctx, int64(len(events)))
+
+	if len(events) == 0 {
+		return nil
+	}
+
+	ctx, span := tracer.Start(ctx, "OutboxService.PublishPending")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("outbox.worker_id", workerID),
+		attribute.Int("outbox.batch_size", batchSize),
+	)
 
 	span.SetAttributes(
 		attribute.Int("outbox.events_claimed", len(events)),
@@ -115,6 +119,8 @@ func (s *outboxService) publishEvent(
 		attribute.Int("outbox.attempt_count", int(event.AttemptCount)),
 	)
 
+	start := time.Now()
+
 	err := s.producer.Publish(
 		ctx,
 		kafka.Record{
@@ -124,7 +130,11 @@ func (s *outboxService) publishEvent(
 			EventID: event.ID.String(),
 		},
 	)
+
+	s.metrics.publishDuration.Record(ctx, time.Since(start).Seconds())
+
 	if err != nil {
+		s.metrics.eventsPublishFailed.Add(ctx, 1)
 		span.RecordError(err)
 		span.SetStatus(
 			codes.Error,
@@ -139,7 +149,8 @@ func (s *outboxService) publishEvent(
 			"event_type", event.EventType,
 		)
 
-		nextAttemptAt := time.Now().Add(defaultRetryDelay)
+		backoff := time.Duration(min(event.AttemptCount+1, 6)) * defaultRetryDelay
+		nextAttemptAt := time.Now().Add(backoff)
 		lastError := err.Error()
 
 		markErr := s.repo.MarkOutboxEventFailed(
@@ -157,6 +168,7 @@ func (s *outboxService) publishEvent(
 			},
 		)
 		if markErr != nil {
+			s.metrics.eventsMarkFailed.Add(ctx, 1)
 			span.RecordError(markErr)
 
 			s.log.ErrorContext(
@@ -194,6 +206,8 @@ func (s *outboxService) publishEvent(
 
 		return fmt.Errorf("mark outbox event published: %w", err)
 	}
+
+	s.metrics.eventsPublished.Add(ctx, 1)
 
 	s.log.DebugContext(
 		ctx,

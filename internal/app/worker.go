@@ -163,10 +163,12 @@ func RunWorker(cfg *config.Config) error {
 	// -------------------------------------------------------------------------
 	// Outbox
 	// -------------------------------------------------------------------------
+	outboxMetrics := outbox.NewMetrics()
 	outboxService := outbox.NewOutboxService(
 		repo,
 		kafkaProducer,
 		log,
+		outboxMetrics,
 	)
 
 	outboxWorker := worker.NewOutboxWorker(

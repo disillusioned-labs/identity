@@ -72,34 +72,32 @@ func (w *OutboxWorker) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	for {
-		err := w.service.PublishPending(
-			ctx,
-			w.workerID,
-			w.batchSize,
-		)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-
-			w.log.ErrorContext(
-				ctx,
-				"outbox publish failed",
-				"error", err,
-				"worker_id", w.workerID,
-			)
-		}
-
 		select {
 		case <-ctx.Done():
 			w.log.Info(
 				"outbox worker stopped",
 				"worker_id", w.workerID,
 			)
-
 			return nil
 
 		case <-ticker.C:
+			err := w.service.PublishPending(
+				ctx,
+				w.workerID,
+				w.batchSize,
+			)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+
+				w.log.ErrorContext(
+					ctx,
+					"outbox publish failed",
+					"error", err,
+					"worker_id", w.workerID,
+				)
+			}
 		}
 	}
 }

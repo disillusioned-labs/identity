@@ -54,6 +54,7 @@ func New(
 		// application config rather than hardcoded here.
 		kgo.RecordRetries(int(cfg.RecordRetries)),
 		kgo.RecordDeliveryTimeout(cfg.RecordDeliveryTimeout),
+		kgo.AllowAutoTopicCreation(),
 	}
 
 	// OpenTelemetry integration.

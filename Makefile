@@ -14,7 +14,7 @@ SQLC  := CGO_ENABLED=0 go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 # Points at the native Postgres this machine develops against. Override it to
 # reach the containerised one from docker-compose (host port 5433):
 #   make migrate-up DB_DSN=postgres://identity_app:devpassword@localhost:5433/identity?sslmode=disable
-DB_DSN ?= postgres://identity_app:devpassword@localhost:5432/identity?sslmode=disable
+DB_DSN ?= postgres://identity_app:devpassword@vps:5433/identity?sslmode=disable
 
 # Build provenance, matching the Dockerfile's ldflags so a local binary reports
 # the same fields as a container one.
