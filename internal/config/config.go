@@ -36,6 +36,7 @@ type Config struct {
 	Postgres  PostgresConfig  `mapstructure:"postgres"`
 	Redis     RedisConfig     `mapstructure:"redis"`
 	Cache     CacheConfig     `mapstructure:"cache"`
+	Kafka     KafkaConfig     `mapstructure:"kafka"`
 	OTel      OTelConfig      `mapstructure:"otel"`
 	Log       LogConfig       `mapstructure:"log"`
 	RateLimit RateLimitConfig `mapstructure:"ratelimit"`
@@ -192,6 +193,14 @@ func (r RedisConfig) LogValue() slog.Value {
 // CacheConfig tunes the object cache built on Redis.
 type CacheConfig struct {
 	DefaultTTL time.Duration `mapstructure:"default_ttl"`
+}
+
+type KafkaConfig struct {
+	Brokers               []string      `mapstructure:"brokers"`
+	ClientID              string        `mapstructure:"client_id"`
+	RecordRetries         int64         `mapstructure:"record_retries"`
+	RecordDeliveryTimeout time.Duration `mapstructure:"record_delivery_timeout"`
+	PingTimeout           time.Duration `mapstructure:"ping_timeout"`
 }
 
 // OTelConfig controls OTLP export of traces and metrics.
@@ -374,6 +383,7 @@ func Load() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+	cfg.Kafka.Brokers = normalizeKafkaBrokers(cfg.Kafka.Brokers)
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -475,6 +485,41 @@ func (c *Config) validate() error {
 	}
 	if c.Cache.DefaultTTL <= 0 {
 		fail("cache.default_ttl must be > 0, got %s", c.Cache.DefaultTTL)
+	}
+
+	if len(c.Kafka.Brokers) == 0 {
+		fail("kafka.brokers must not be empty")
+	}
+
+	for i, broker := range c.Kafka.Brokers {
+		if strings.TrimSpace(broker) == "" {
+			fail("kafka.brokers[%d] must not be empty", i)
+		}
+	}
+
+	if strings.TrimSpace(c.Kafka.ClientID) == "" {
+		fail("kafka.client_id must not be empty")
+	}
+
+	if c.Kafka.RecordRetries < 0 {
+		fail(
+			"kafka.record_retries must be >= 0, got %d",
+			c.Kafka.RecordRetries,
+		)
+	}
+
+	if c.Kafka.RecordDeliveryTimeout <= 0 {
+		fail(
+			"kafka.record_delivery_timeout must be > 0, got %s",
+			c.Kafka.RecordDeliveryTimeout,
+		)
+	}
+
+	if c.Kafka.PingTimeout <= 0 {
+		fail(
+			"kafka.ping_timeout must be > 0, got %s",
+			c.Kafka.PingTimeout,
+		)
 	}
 
 	for _, e := range []struct {
@@ -616,6 +661,12 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("cache.default_ttl", "5m")
 
+	v.SetDefault("kafka.brokers", []string{"localhost:9092"})
+	v.SetDefault("kafka.client_id", "identity")
+	v.SetDefault("kafka.record_retries", int64(5))
+	v.SetDefault("kafka.record_delivery_timeout", "30s")
+	v.SetDefault("kafka.ping_timeout", "5s")
+
 	v.SetDefault("otel.sdk_disabled", false)
 	v.SetDefault("otel.traces_exporter", OTelExporterOTLP)
 	v.SetDefault("otel.metrics_exporter", OTelExporterOTLP)
@@ -642,4 +693,19 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.access_token_ttl", "15m")
 	v.SetDefault("auth.refresh_token_ttl", "168h") // 7 days
 	v.SetDefault("auth.issuer", "identity")
+}
+
+func normalizeKafkaBrokers(brokers []string) []string {
+	var result []string
+
+	for _, value := range brokers {
+		for broker := range strings.SplitSeq(value, ",") {
+			broker = strings.TrimSpace(broker)
+			if broker != "" {
+				result = append(result, broker)
+			}
+		}
+	}
+
+	return result
 }

@@ -36,7 +36,7 @@ func (s jwksKeySource) Fetch(ctx context.Context) (map[string]*rsa.PublicKey, []
 	return keys, nil, nil
 }
 
-func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ cache.Cache, authCfg config.AuthConfig, log *slog.Logger) (server.Deps, error) {
+func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cache cache.Cache, authCfg config.AuthConfig, log *slog.Logger) (server.Deps, error) {
 	repo := repository.NewStore(pool)
 
 	masterKey, err := authCfg.MasterKeyBytes()
@@ -107,5 +107,6 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, _ ca
 		Pool:                          pool,
 		Redis:                         rdb,
 		RedisRequired:                 redisRequired,
+		Cache:                         cache,
 	}, nil
 }

@@ -4,78 +4,51 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
       args:
-        VERSION: dev
-        COMMIT: local
-        BUILD_DATE: unknown
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     env_file:
       - .env
       - .env.compose
     ports:
       - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     networks:
-      - app
+      - data
+      - messaging
       - observability
     restart: unless-stopped
 
-  generate-signing-key:
+  worker:
+    container_name: identity-worker
     build:
       context: .
       dockerfile: Dockerfile
-      target: build
+      target: runtime
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-local}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     env_file:
       - .env
       - .env.compose
-    command: [ "go", "run", "./cmd/generate-signing-key" ]
+    entrypoint: ["/app/worker"]
     networks:
-      - app
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  postgres:
-    container_name: identity-postgres
-    image: postgres:18-alpine
-    environment:
-      POSTGRES_USER: identity_app
-      POSTGRES_PASSWORD: devpassword
-      POSTGRES_DB: identity
-    ports:
-      - "5433:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U identity_app -d identity"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - app
-
-  redis:
-    container_name: identity-redis
-    image: redis:8-alpine
-    ports:
-      - "6380:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - app
+      - data
+      - messaging
+      - observability
+    restart: unless-stopped
 
 networks:
-  app:
-    driver: bridge
+  data:
+    external: true
+    name: data
+
+  messaging:
+    external: true
+    name: messaging
 
   observability:
     external: true
-
-volumes:
-  pgdata:
+    name: observability

@@ -30,9 +30,9 @@ import (
 // exits.
 const otelFlushTimeout = 5 * time.Second
 
-// Run boots the app with the given configuration and blocks until the process
+// RunAPI boots the app with the given configuration and blocks until the process
 // is told to stop. The caller owns loading and validating cfg (see cmd/api).
-func Run(cfg *config.Config) error {
+func RunAPI(cfg *config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -44,7 +44,9 @@ func Run(cfg *config.Config) error {
 	slog.SetDefault(log)
 	log.Info("starting", "service", cfg.Service.Name, "build", buildInfo())
 
-	// Unpacked here so the platform packages below take plain values, not *config.Config.
+	// -------------------------------------------------------------------------
+	// Telemetry
+	// -------------------------------------------------------------------------
 	otelOpts := []telemetry.Option{telemetry.WithBuild(version, commit)}
 	if cfg.OTel.TracesEnabled() {
 		sampler, err := telemetry.NewSampler(cfg.OTel.TracesSampler, cfg.OTel.TracesSamplerArg)
@@ -78,6 +80,9 @@ func Run(cfg *config.Config) error {
 		}
 	}()
 
+	// -------------------------------------------------------------------------
+	// PostgreSQL
+	// -------------------------------------------------------------------------
 	pool, err := postgres.NewPool(ctx, cfg.Postgres.DSN,
 		postgres.MaxConns(cfg.Postgres.MaxConns),
 		postgres.MinConns(cfg.Postgres.MinConns),
@@ -96,13 +101,16 @@ func Run(cfg *config.Config) error {
 		}
 	}
 
+	// -------------------------------------------------------------------------
+	// Redis
+	// -------------------------------------------------------------------------
 	rdb, svcCache, closeRedis, err := setupRedis(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
 	defer closeRedis()
-
 	redisRequired := cfg.Redis.Mode == config.RedisModeRequired
+
 	deps, err := buildDeps(pool, rdb, redisRequired, svcCache, cfg.Auth, log)
 	if err != nil {
 		return fmt.Errorf("build dependencies: %w", err)

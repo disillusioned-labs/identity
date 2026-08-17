@@ -12,22 +12,93 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createOutboxEvent = `-- name: CreateOutboxEvent :one
-INSERT INTO outbox_events (
-    aggregate_type,
-    aggregate_id,
-    event_type,
-    event_version,
-    payload
-)
-VALUES (
-           $1,
-           $2,
-           $3,
-           $4,
-           $5
-       )
+const claimPendingOutboxEvents = `-- name: ClaimPendingOutboxEvents :many
+WITH pending_events AS (SELECT id
+                        FROM outbox_events
+                        WHERE published_at IS NULL
+                          AND (
+                            next_attempt_at IS NULL
+                                OR next_attempt_at <= NOW()
+                            )
+                          AND (
+                            locked_at IS NULL
+                                OR locked_at < NOW() - INTERVAL '5 minutes'
+                            )
+                        ORDER BY created_at ASC, id ASC
+    LIMIT $1
+    FOR
+UPDATE SKIP LOCKED
+    )
+UPDATE outbox_events AS outbox
+SET locked_at = NOW(),
+    locked_by = $2 FROM pending_events
+WHERE outbox.id = pending_events.id
     RETURNING
+    outbox.id
+    , outbox.aggregate_type
+    , outbox.aggregate_id
+    , outbox.event_type
+    , outbox.event_version
+    , outbox.payload
+    , outbox.created_at
+    , outbox.published_at
+    , outbox.attempt_count
+    , outbox.next_attempt_at
+    , outbox.locked_at
+    , outbox.locked_by
+    , outbox.last_error
+`
+
+type ClaimPendingOutboxEventsParams struct {
+	Limit    int32       `json:"limit"`
+	LockedBy pgtype.Text `json:"locked_by"`
+}
+
+func (q *Queries) ClaimPendingOutboxEvents(ctx context.Context, arg ClaimPendingOutboxEventsParams) ([]OutboxEvent, error) {
+	rows, err := q.db.Query(ctx, claimPendingOutboxEvents, arg.Limit, arg.LockedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OutboxEvent{}
+	for rows.Next() {
+		var i OutboxEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.AggregateType,
+			&i.AggregateID,
+			&i.EventType,
+			&i.EventVersion,
+			&i.Payload,
+			&i.CreatedAt,
+			&i.PublishedAt,
+			&i.AttemptCount,
+			&i.NextAttemptAt,
+			&i.LockedAt,
+			&i.LockedBy,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const createOutboxEvent = `-- name: CreateOutboxEvent :one
+INSERT INTO outbox_events (aggregate_type,
+                           aggregate_id,
+                           event_type,
+                           event_version,
+                           payload)
+VALUES ($1,
+        $2,
+        $3,
+        $4,
+        $5) RETURNING
     id,
     aggregate_type,
     aggregate_id,
@@ -79,7 +150,8 @@ func (q *Queries) CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventPa
 }
 
 const deletePublishedOutboxEvents = `-- name: DeletePublishedOutboxEvents :execrows
-DELETE FROM outbox_events
+DELETE
+FROM outbox_events
 WHERE published_at IS NOT NULL
   AND published_at < NOW() - INTERVAL '7 days'
 `
@@ -92,97 +164,13 @@ func (q *Queries) DeletePublishedOutboxEvents(ctx context.Context) (int64, error
 	return result.RowsAffected(), nil
 }
 
-const getPendingOutboxEvents = `-- name: GetPendingOutboxEvents :many
-SELECT
-    id,
-    aggregate_type,
-    aggregate_id,
-    event_type,
-    event_version,
-    payload,
-    created_at,
-    published_at,
-    attempt_count,
-    next_attempt_at,
-    locked_at,
-    locked_by,
-    last_error
-FROM outbox_events
-WHERE published_at IS NULL
-  AND (
-    next_attempt_at IS NULL
-        OR next_attempt_at <= NOW()
-    )
-  AND (
-    locked_at IS NULL
-        OR locked_at < NOW() - INTERVAL '5 minutes'
-    )
-ORDER BY created_at ASC, id ASC
-    LIMIT $1
-FOR UPDATE SKIP LOCKED
-`
-
-func (q *Queries) GetPendingOutboxEvents(ctx context.Context, limit int32) ([]OutboxEvent, error) {
-	rows, err := q.db.Query(ctx, getPendingOutboxEvents, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []OutboxEvent{}
-	for rows.Next() {
-		var i OutboxEvent
-		if err := rows.Scan(
-			&i.ID,
-			&i.AggregateType,
-			&i.AggregateID,
-			&i.EventType,
-			&i.EventVersion,
-			&i.Payload,
-			&i.CreatedAt,
-			&i.PublishedAt,
-			&i.AttemptCount,
-			&i.NextAttemptAt,
-			&i.LockedAt,
-			&i.LockedBy,
-			&i.LastError,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const lockOutboxEvent = `-- name: LockOutboxEvent :exec
-UPDATE outbox_events
-SET
-    locked_at = NOW(),
-    locked_by = $2
-WHERE id = $1
-  AND published_at IS NULL
-`
-
-type LockOutboxEventParams struct {
-	ID       uuid.UUID   `json:"id"`
-	LockedBy pgtype.Text `json:"locked_by"`
-}
-
-func (q *Queries) LockOutboxEvent(ctx context.Context, arg LockOutboxEventParams) error {
-	_, err := q.db.Exec(ctx, lockOutboxEvent, arg.ID, arg.LockedBy)
-	return err
-}
-
 const markOutboxEventFailed = `-- name: MarkOutboxEventFailed :exec
 UPDATE outbox_events
-SET
-    attempt_count = attempt_count + 1,
+SET attempt_count   = attempt_count + 1,
     next_attempt_at = $2,
-    last_error = $3,
-    locked_at = NULL,
-    locked_by = NULL
+    last_error      = $3,
+    locked_at       = NULL,
+    locked_by       = NULL
 WHERE id = $1
   AND published_at IS NULL
 `
@@ -200,11 +188,10 @@ func (q *Queries) MarkOutboxEventFailed(ctx context.Context, arg MarkOutboxEvent
 
 const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :exec
 UPDATE outbox_events
-SET
-    published_at = NOW(),
-    locked_at = NULL,
-    locked_by = NULL,
-    last_error = NULL
+SET published_at = NOW(),
+    locked_at    = NULL,
+    locked_by    = NULL,
+    last_error   = NULL
 WHERE id = $1
   AND published_at IS NULL
 `
@@ -216,8 +203,7 @@ func (q *Queries) MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) er
 
 const releaseOutboxEventLock = `-- name: ReleaseOutboxEventLock :exec
 UPDATE outbox_events
-SET
-    locked_at = NULL,
+SET locked_at = NULL,
     locked_by = NULL
 WHERE id = $1
   AND published_at IS NULL

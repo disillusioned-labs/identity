@@ -1,21 +1,18 @@
 # syntax=docker/dockerfile:1
+
 FROM golang:1.25-alpine AS build
 WORKDIR /src
 
-# Dependencies resolve in their own layer so source edits don't re-download them.
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 
-# Provenance is passed in rather than read from git: .dockerignore excludes
-# .git, so the binary has no other way to know what it was built from.
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
-# -trimpath strips local filesystem paths, so the same source yields the same
-# binary regardless of where it was built.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
@@ -24,16 +21,47 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -X github.com/disillusioned-labs/identity/internal/app.version=${VERSION} \
         -X github.com/disillusioned-labs/identity/internal/app.commit=${COMMIT} \
         -X github.com/disillusioned-labs/identity/internal/app.buildDate=${BUILD_DATE}" \
-      -o /out/api ./cmd/api
+      -o /out/api ./cmd/api && \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags="-s -w \
+        -X github.com/disillusioned-labs/identity/internal/app.version=${VERSION} \
+        -X github.com/disillusioned-labs/identity/internal/app.commit=${COMMIT} \
+        -X github.com/disillusioned-labs/identity/internal/app.buildDate=${BUILD_DATE}" \
+      -o /out/worker ./cmd/worker && \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags="-s -w \
+        -X github.com/disillusioned-labs/identity/internal/app.version=${VERSION} \
+        -X github.com/disillusioned-labs/identity/internal/app.commit=${COMMIT} \
+        -X github.com/disillusioned-labs/identity/internal/app.buildDate=${BUILD_DATE}" \
+      -o /out/generate-signing-key ./cmd/generate-signing-key
 
-FROM gcr.io/distroless/static-debian12:nonroot
+
+# ---------------------------------------------------------------------------
+# Runtime image
+# ---------------------------------------------------------------------------
+
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
 WORKDIR /app
+
 COPY --from=build /out/api ./api
-# No config file is copied. The app is configured entirely through environment
-# variables, on top of internal/config's defaults - which are the production-safe
-# set (JSON logs at info, no boot-time migrations, pprof off). .env.example
-# documents every available key; it is a development convenience, never shipped.
+COPY --from=build /out/worker ./worker
+
 EXPOSE 8080
-# The admin listener (metrics, pprof) binds 127.0.0.1 and is deliberately not
-# exposed: reach it from a sidecar or via port-forward.
+
 ENTRYPOINT ["/app/api"]
+
+
+# ---------------------------------------------------------------------------
+# Signing-key provisioning image
+# ---------------------------------------------------------------------------
+
+FROM gcr.io/distroless/static-debian12:nonroot AS signing-key
+
+WORKDIR /app
+
+COPY --from=build /out/generate-signing-key ./generate-signing-key
+
+ENTRYPOINT ["/app/generate-signing-key"]

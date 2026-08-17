@@ -1,5 +1,3 @@
-// Command api is the HTTP API entry point: load configuration, hand it to the
-// app, and turn a failure into an exit code. Wiring lives in internal/app.
 package main
 
 import (
@@ -11,7 +9,7 @@ import (
 )
 
 func main() {
-	// Loaded here, not inside RunAPI, so RunAPI stays callable with a config built in code.
+	// Loaded here, not inside RunWorker, so RunWorker stays callable with a config built in code.
 	cfg, err := config.Load()
 	if err != nil {
 		// The real logger is built from cfg, so this failure has to report
@@ -19,9 +17,9 @@ func main() {
 		slog.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	cfg.Service.Name += "-api"
+	cfg.Service.Name += "-worker"
 
-	if err := app.RunAPI(cfg); err != nil {
+	if err := app.RunWorker(cfg); err != nil {
 		slog.Error("fatal", "error", err)
 		os.Exit(1)
 	}

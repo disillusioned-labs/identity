@@ -17,6 +17,7 @@ import (
 	organizationhandler "github.com/disillusioned-labs/identity/internal/handler/organization"
 	"github.com/disillusioned-labs/identity/internal/handler/organization_invitation"
 	organizationmemberhandler "github.com/disillusioned-labs/identity/internal/handler/organization_member"
+	"github.com/disillusioned-labs/identity/internal/platform/cache"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
 	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
@@ -68,6 +69,7 @@ type Deps struct {
 	Pool          *pgxpool.Pool
 	Redis         *goredis.Client
 	RedisRequired bool
+	Cache         cache.Cache
 }
 
 // New assembles the router - middleware chain, probes, /metrics, and every

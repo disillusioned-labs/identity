@@ -1,4 +1,4 @@
-.PHONY: run build test test-integration lint tidy sqlc sqlc-diff migrate-new migrate-up migrate-down migrate-status vuln docker-up docker-down docker-build help
+.PHONY: run build test test-integration lint tidy sqlc sqlc-diff migrate-new migrate-up migrate-down migrate-status vuln docker-up docker-down docker-build generate-signing-key rotate-signing-key help
 
 # Tool versions are pinned so local runs and CI can never drift. Bump here and
 # in .github/workflows/ci.yml together. They are kept out of go.mod on purpose:
@@ -7,6 +7,7 @@
 GOOSE_VERSION ?= v3.27.3
 SQLC_VERSION  ?= v1.30.0
 VULN_VERSION  ?= v1.1.4
+
 GOOSE := go run github.com/pressly/goose/v3/cmd/goose@$(GOOSE_VERSION)
 SQLC  := CGO_ENABLED=0 go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 
@@ -20,10 +21,13 @@ DB_DSN ?= postgres://identity_app:devpassword@localhost:5432/identity?sslmode=di
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
 LDFLAGS := -s -w \
 	-X github.com/disillusioned-labs/identity/internal/app.version=$(VERSION) \
 	-X github.com/disillusioned-labs/identity/internal/app.commit=$(COMMIT) \
 	-X github.com/disillusioned-labs/identity/internal/app.buildDate=$(BUILD_DATE)
+
+SIGNING_KEY_IMAGE := identity-signing-key:local
 
 run: ## Run the API locally
 	go run ./cmd/api
@@ -64,18 +68,51 @@ migrate-down: ## Roll back one migration
 migrate-status: ## Show which migrations are applied
 	$(GOOSE) -dir db/migrations postgres "$(DB_DSN)" status
 
-docker-up: ## Start postgres, redis, jaeger, prometheus
+docker-up: ## Start the local application stack
 	docker compose up -d
 
-docker-down: ## Stop the local stack
+docker-down: ## Stop the local application stack
 	docker compose down
 
-docker-build: ## Build the production image with provenance stamped in
+docker-build: ## Build the production application image
 	docker build \
+		--target runtime \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t identity:$(VERSION) -t identity:latest .
+		-t identity:$(VERSION) \
+		-t identity:latest \
+		.
+
+generate-signing-key: ## Generate the initial signing key
+	docker build \
+		--target signing-key \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t $(SIGNING_KEY_IMAGE) \
+		.
+
+	docker run --rm \
+		--network data \
+		--env-file .env.compose \
+		$(SIGNING_KEY_IMAGE)
+
+rotate-signing-key: ## Rotate the active signing key
+	docker build \
+		--target signing-key \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t $(SIGNING_KEY_IMAGE) \
+		.
+
+	docker run --rm \
+		--network data \
+		--env-file .env.compose \
+		$(SIGNING_KEY_IMAGE) \
+		--rotate
+
 
 help: ## Show targets
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
