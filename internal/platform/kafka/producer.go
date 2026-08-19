@@ -7,18 +7,6 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// Record is the application-facing Kafka record.
-//
-// EventID is infrastructure metadata and is therefore transported as a Kafka
-// header rather than being forced into every event payload.
-type Record struct {
-	Topic string
-	Key   []byte
-	Value []byte
-
-	Headers []kgo.RecordHeader
-}
-
 // Producer publishes records to Kafka.
 type Producer interface {
 	Publish(ctx context.Context, record Record) error
@@ -56,21 +44,11 @@ func (p *ClientProducer) Publish(
 		return fmt.Errorf("kafka topic must not be empty")
 	}
 
-	headers := make([]kgo.RecordHeader, 0, len(record.Headers)+1)
-	headers = append(headers, record.Headers...)
-
-	if record.EventID != "" {
-		headers = append(
-			headers,
-			RecordHeader("event-id", record.EventID),
-		)
-	}
-
 	kafkaRecord := &kgo.Record{
 		Topic:   record.Topic,
 		Key:     record.Key,
 		Value:   record.Value,
-		Headers: headers,
+		Headers: record.Headers,
 	}
 
 	_, err := p.client.ProduceSync(ctx, kafkaRecord).First()

@@ -123,15 +123,3 @@ func ConsumerGroup(group string, topics ...string) []Option {
 		kgo.ConsumeTopics(topics...),
 	}
 }
-
-// RecordHeader returns a Kafka record header.
-//
-// Headers are useful for metadata such as event IDs, correlation IDs,
-// trace propagation, content type, etc., without coupling the event payload
-// schema to infrastructure metadata.
-func RecordHeader(key, value string) kgo.RecordHeader {
-	return kgo.RecordHeader{
-		Key:   key,
-		Value: []byte(value),
-	}
-}
