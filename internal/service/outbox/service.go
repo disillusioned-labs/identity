@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/disillusioned-labs/identity/internal/platform/kafka"
@@ -122,26 +123,33 @@ func (s *outboxService) publishEvent(
 
 	start := time.Now()
 
-	headers := make([]kgo.RecordHeader, 0, 2)
+	headers := make([]kgo.RecordHeader, 0, 8)
 
 	carrier := kafka.NewHeaderCarrier(&headers)
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
 
+	headers = append(
+		headers,
+		kafka.RecordHeader("event-id", event.ID.String()),
+		kafka.RecordHeader("event-version", strconv.Itoa(int(event.EventVersion))),
+		kafka.RecordHeader("source-service", "identity"),
+		kafka.RecordHeader("aggregate-type", event.AggregateType),
+		kafka.RecordHeader("aggregate-id", event.AggregateID.String()),
+	)
+
+	if event.TraceID.Valid {
+		headers = append(
+			headers,
+			kafka.RecordHeader("trace-id", event.TraceID.String),
+		)
+	}
+
 	err := s.producer.Publish(
 		ctx,
 		kafka.Record{
-			Topic: event.EventType,
-			Key:   []byte(event.AggregateID.String()),
-			Value: event.Payload,
-
-			EventID:       event.ID.String(),
-			EventVersion:  int(event.EventVersion),
-			SourceService: "identity",
-
-			AggregateType: event.AggregateType,
-			AggregateID:   event.AggregateID.String(),
-
-			TraceID: event.TraceID.String,
+			Topic:   event.EventType,
+			Key:     []byte(event.AggregateID.String()),
+			Value:   event.Payload,
 			Headers: headers,
 		},
 	)

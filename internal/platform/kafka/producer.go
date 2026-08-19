@@ -16,15 +16,6 @@ type Record struct {
 	Key   []byte
 	Value []byte
 
-	EventID       string
-	EventVersion  int
-	SourceService string
-
-	AggregateType string
-	AggregateID   string
-
-	TraceID string
-
 	Headers []kgo.RecordHeader
 }
 
