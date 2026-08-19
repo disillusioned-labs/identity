@@ -11,9 +11,11 @@ import (
 	"github.com/disillusioned-labs/identity/internal/service"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var tracer = otel.Tracer("service/organization")
@@ -382,12 +384,22 @@ func createOrganizationOutboxEvent(
 		return err
 	}
 
+	spanCtx := trace.SpanContextFromContext(ctx)
+	var traceID pgtype.Text
+	if spanCtx.IsValid() {
+		traceID = pgtype.Text{
+			String: spanCtx.TraceID().String(),
+			Valid:  true,
+		}
+	}
+
 	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
 		AggregateType: organizationAggregateType,
 		AggregateID:   aggregateID,
 		EventType:     eventType,
 		EventVersion:  organizationEventVersion,
 		Payload:       payload,
+		TraceID:       traceID,
 	})
 	return err
 }

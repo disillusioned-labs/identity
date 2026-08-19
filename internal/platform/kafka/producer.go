@@ -12,10 +12,19 @@ import (
 // EventID is infrastructure metadata and is therefore transported as a Kafka
 // header rather than being forced into every event payload.
 type Record struct {
-	Topic   string
-	Key     []byte
-	Value   []byte
-	EventID string
+	Topic string
+	Key   []byte
+	Value []byte
+
+	EventID       string
+	EventVersion  int
+	SourceService string
+
+	AggregateType string
+	AggregateID   string
+
+	TraceID string
+
 	Headers []kgo.RecordHeader
 }
 

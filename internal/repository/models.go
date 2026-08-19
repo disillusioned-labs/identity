@@ -53,6 +53,7 @@ type OutboxEvent struct {
 	Payload       []byte             `json:"payload"`
 	CreatedAt     time.Time          `json:"created_at"`
 	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	TraceID       pgtype.Text        `json:"trace_id"`
 	AttemptCount  int32              `json:"attempt_count"`
 	NextAttemptAt pgtype.Timestamptz `json:"next_attempt_at"`
 	LockedAt      pgtype.Timestamptz `json:"locked_at"`

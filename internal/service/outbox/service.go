@@ -9,6 +9,7 @@ import (
 	"github.com/disillusioned-labs/identity/internal/platform/kafka"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -121,13 +122,27 @@ func (s *outboxService) publishEvent(
 
 	start := time.Now()
 
+	headers := make([]kgo.RecordHeader, 0, 2)
+
+	carrier := kafka.NewHeaderCarrier(&headers)
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
 	err := s.producer.Publish(
 		ctx,
 		kafka.Record{
-			Topic:   event.EventType,
-			Key:     []byte(event.AggregateID.String()),
-			Value:   event.Payload,
-			EventID: event.ID.String(),
+			Topic: event.EventType,
+			Key:   []byte(event.AggregateID.String()),
+			Value: event.Payload,
+
+			EventID:       event.ID.String(),
+			EventVersion:  int(event.EventVersion),
+			SourceService: "identity",
+
+			AggregateType: event.AggregateType,
+			AggregateID:   event.AggregateID.String(),
+
+			TraceID: event.TraceID.String,
+			Headers: headers,
 		},
 	)
 

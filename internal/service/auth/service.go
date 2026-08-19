@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
@@ -602,12 +603,22 @@ func createOutboxEvent(
 		return err
 	}
 
+	spanCtx := trace.SpanContextFromContext(ctx)
+	var traceID pgtype.Text
+	if spanCtx.IsValid() {
+		traceID = pgtype.Text{
+			String: spanCtx.TraceID().String(),
+			Valid:  true,
+		}
+	}
+
 	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
 		AggregateType: authAggregateType,
 		AggregateID:   aggregateID,
 		EventType:     eventType,
 		EventVersion:  authEventVersion,
 		Payload:       payload,
+		TraceID:       traceID,
 	})
 	return err
 }

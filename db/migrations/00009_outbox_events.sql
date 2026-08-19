@@ -1,7 +1,7 @@
 -- +goose Up
 CREATE TABLE outbox_events
 (
-    id              UUID PRIMARY KEY     DEFAULT gen_random_uuid(),
+    id              UUID PRIMARY KEY     DEFAULT uuidv7(),
 
     aggregate_type  TEXT        NOT NULL,
     aggregate_id    UUID        NOT NULL,
@@ -12,8 +12,9 @@ CREATE TABLE outbox_events
     payload         JSONB       NOT NULL,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
     published_at    TIMESTAMPTZ,
+
+    trace_id        TEXT,
 
     attempt_count   INTEGER     NOT NULL DEFAULT 0,
     next_attempt_at TIMESTAMPTZ,
