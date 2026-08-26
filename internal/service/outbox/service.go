@@ -131,6 +131,7 @@ func (s *outboxService) publishEvent(
 	headers = append(
 		headers,
 		kafka.RecordHeader("event-id", event.ID.String()),
+		kafka.RecordHeader("event-type", event.EventType),
 		kafka.RecordHeader("event-version", strconv.Itoa(int(event.EventVersion))),
 		kafka.RecordHeader("source-service", "identity"),
 		kafka.RecordHeader("aggregate-type", event.AggregateType),
