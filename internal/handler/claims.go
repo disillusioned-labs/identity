@@ -3,7 +3,7 @@ package handler
 import (
 	"context"
 
-	"github.com/disillusioned-labs/authkit"
+	"github.com/disillusioned-labs/platform/authkit"
 )
 
 func ClaimsFrom(ctx context.Context) (authkit.Claims, bool) {

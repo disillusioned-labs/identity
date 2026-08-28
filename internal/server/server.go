@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/disillusioned-labs/authkit"
+	"github.com/disillusioned-labs/platform/authkit"
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/handler"
 	authhandler "github.com/disillusioned-labs/identity/internal/handler/auth"
@@ -17,7 +17,7 @@ import (
 	organizationhandler "github.com/disillusioned-labs/identity/internal/handler/organization"
 	"github.com/disillusioned-labs/identity/internal/handler/organization_invitation"
 	organizationmemberhandler "github.com/disillusioned-labs/identity/internal/handler/organization_member"
-	"github.com/disillusioned-labs/identity/internal/platform/cache"
+	"github.com/disillusioned-labs/platform/cache"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
 	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"

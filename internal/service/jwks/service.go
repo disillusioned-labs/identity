@@ -5,9 +5,9 @@ import (
 	"crypto/rsa"
 	"log/slog"
 
-	"github.com/disillusioned-labs/identity/internal/platform/jwks"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
+	"github.com/disillusioned-labs/platform/jwks"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 )

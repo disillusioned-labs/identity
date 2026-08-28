@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
 	"github.com/google/uuid"
@@ -216,14 +217,53 @@ func (s *organizationInvitationService) CreateInvitation(ctx context.Context, in
 		if txErr := createOrganizationInvitationOutboxEvent(
 			ctx,
 			q,
-			createdInvitation.ID,
+			currentMember.UserID,
 			EventOrganizationInvitationCreated,
+			constant.TopicAudit,
 			event,
 		); txErr != nil {
 			return txErr
 		}
 
 		invitation = createdInvitation
+
+		notificationPayload, err := json.Marshal(map[string]string{
+			"organization_name": currentMember.OrganizationName,
+			"inviter_name":      currentMember.UserName,
+			"invite_url":        hashInvitationToken(rawToken),
+		})
+		if err != nil {
+			return err
+		}
+
+		notificationEvent := notificationcontract.CreatedEvent{
+			NotificationType: "organization_invitation",
+			Category:         notificationcontract.CategoryTransactional,
+			RecipientID:      createdInvitation.Email,
+			Targets: []notificationcontract.Target{
+				{
+					Channel:     notificationcontract.ChannelEmail,
+					Destination: createdInvitation.Email,
+				},
+			},
+			Payload: notificationPayload,
+		}
+
+		if err := notificationEvent.Validate(); err != nil {
+			return err
+		}
+
+		err = createOrganizationInvitationOutboxEvent(
+			ctx,
+			q,
+			input.UserID,
+			notificationcontract.EventTypeCreated,
+			constant.TopicNotificationTransactional,
+			notificationEvent,
+		)
+		if err != nil {
+			return err
+		}
 
 		return nil
 	})
@@ -526,9 +566,70 @@ func (s *organizationInvitationService) acceptInvitation(
 		if err := createOrganizationInvitationOutboxEvent(
 			ctx,
 			q,
-			invitationID,
+			userID,
 			EventOrganizationInvitationAccepted,
+			constant.TopicAudit,
 			event,
+		); err != nil {
+			return err
+		}
+
+		invitation, err := q.GetOrganizationInvitation(ctx, invitationID)
+		if err != nil {
+			return err
+		}
+
+		inviter, err := q.GetUserByID(ctx, invitation.InvitedBy)
+		if err != nil {
+			return err
+		}
+
+		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         invitation.InvitedBy,
+			OrganizationID: organizationID,
+		})
+		if err != nil {
+			return err
+		}
+
+		acceptingUser, err := q.GetUserByID(ctx, userID)
+		if err != nil {
+			return err
+		}
+
+		notificationPayload, err := json.Marshal(map[string]string{
+			"organization_name": org.OrganizationName,
+			"invitee_name":      acceptingUser.Name,
+			"inviter_name":      inviter.Name,
+		})
+		if err != nil {
+			return err
+		}
+
+		notificationEvent := notificationcontract.CreatedEvent{
+			NotificationType: "organization_invitation_accepted",
+			Category:         notificationcontract.CategoryTransactional,
+			RecipientID:      inviter.ID.String(),
+			Targets: []notificationcontract.Target{
+				{
+					Channel:     notificationcontract.ChannelEmail,
+					Destination: inviter.Email,
+				},
+			},
+			Payload: notificationPayload,
+		}
+
+		if err := notificationEvent.Validate(); err != nil {
+			return err
+		}
+
+		if err := createOrganizationInvitationOutboxEvent(
+			ctx,
+			q,
+			userID,
+			notificationcontract.EventTypeCreated,
+			constant.TopicNotificationTransactional,
+			notificationEvent,
 		); err != nil {
 			return err
 		}
@@ -592,6 +693,11 @@ func (s *organizationInvitationService) RevokeInvitation(ctx context.Context, in
 	}
 
 	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		invitation, err := q.GetOrganizationInvitation(ctx, input.InvitationID)
+		if err != nil {
+			return err
+		}
+
 		rows, err := q.RevokeInvitation(ctx, repository.RevokeInvitationParams{
 			ID:             input.InvitationID,
 			OrganizationID: input.OrganizationID,
@@ -613,9 +719,68 @@ func (s *organizationInvitationService) RevokeInvitation(ctx context.Context, in
 		if err := createOrganizationInvitationOutboxEvent(
 			ctx,
 			q,
-			input.InvitationID,
+			input.UserID,
 			EventOrganizationInvitationRevoked,
+			constant.TopicAudit,
 			event,
+		); err != nil {
+			return err
+		}
+
+		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.UserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			return err
+		}
+
+		revoker, err := q.GetUserByID(ctx, input.UserID)
+		if err != nil {
+			return err
+		}
+
+		invitee, err := q.GetUserByEmail(ctx, invitation.Email)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+
+		notificationPayload, err := json.Marshal(map[string]string{
+			"organization_name": org.OrganizationName,
+			"invitee_name":      invitee.Name,
+			"revoker_name":      revoker.Name,
+		})
+		if err != nil {
+			return err
+		}
+
+		notificationEvent := notificationcontract.CreatedEvent{
+			NotificationType: "organization_invitation_revoked",
+			Category:         notificationcontract.CategoryTransactional,
+			RecipientID:      invitee.ID.String(),
+			Targets: []notificationcontract.Target{
+				{
+					Channel:     notificationcontract.ChannelEmail,
+					Destination: invitee.Email,
+				},
+			},
+			Payload: notificationPayload,
+		}
+
+		if err := notificationEvent.Validate(); err != nil {
+			return err
+		}
+
+		if err := createOrganizationInvitationOutboxEvent(
+			ctx,
+			q,
+			input.UserID,
+			notificationcontract.EventTypeCreated,
+			constant.TopicNotificationTransactional,
+			notificationEvent,
 		); err != nil {
 			return err
 		}
@@ -691,6 +856,7 @@ func createOrganizationInvitationOutboxEvent(
 	q repository.Querier,
 	aggregateID uuid.UUID,
 	eventType string,
+	topic string,
 	event any,
 ) error {
 	payload, err := json.Marshal(event)
@@ -712,6 +878,7 @@ func createOrganizationInvitationOutboxEvent(
 		AggregateID:   aggregateID,
 		EventType:     eventType,
 		EventVersion:  organizationInvitationEventVersion,
+		Topic:         topic,
 		Payload:       payload,
 		TraceID:       traceID,
 	})

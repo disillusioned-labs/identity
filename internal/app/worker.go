@@ -12,14 +12,16 @@ import (
 	"time"
 
 	"github.com/disillusioned-labs/identity/internal/config"
-	"github.com/disillusioned-labs/identity/internal/platform/kafka"
-	"github.com/disillusioned-labs/identity/internal/platform/postgres"
-	"github.com/disillusioned-labs/identity/internal/platform/telemetry"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service/outbox"
 	"github.com/disillusioned-labs/identity/internal/worker"
+	"github.com/disillusioned-labs/platform/kafka"
+	"github.com/disillusioned-labs/platform/postgres"
+	"github.com/disillusioned-labs/platform/telemetry"
 
 	"golang.org/x/sync/errgroup"
+
+	migrations "github.com/disillusioned-labs/identity/db/migrations"
 )
 
 // RunWorker boots the worker process with the given configuration and blocks
@@ -137,7 +139,7 @@ func RunWorker(cfg *config.Config) error {
 	log.Info("connected to postgres", "postgres", cfg.Postgres)
 
 	if cfg.Postgres.Migrate {
-		if err := postgres.Migrate(ctx, pool, log); err != nil {
+		if err := postgres.Migrate(ctx, pool, migrations.FS, log); err != nil {
 			return fmt.Errorf("run migrations: %w", err)
 		}
 	}
@@ -146,7 +148,18 @@ func RunWorker(cfg *config.Config) error {
 	// -------------------------------------------------------------------------
 	// Kafka
 	// -------------------------------------------------------------------------
-	kafkaClient, err := kafka.New(ctx, cfg.Kafka)
+	kafkaClient, err := kafka.New(
+		ctx,
+		kafka.KafkaConfig{
+			Brokers:     cfg.Kafka.Brokers,
+			ClientID:    cfg.Kafka.ClientID,
+			PingTimeout: cfg.Kafka.PingTimeout,
+			Producer: kafka.ProducerConfig{
+				RecordRetries:         cfg.Kafka.Producer.RecordRetries,
+				RecordDeliveryTimeout: cfg.Kafka.Producer.RecordDeliveryTimeout,
+			},
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("connect kafka: %w", err)
 	}

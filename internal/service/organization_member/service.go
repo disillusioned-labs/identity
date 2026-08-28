@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
 	"github.com/google/uuid"
@@ -239,7 +240,61 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(
 			input.TargetUserID,
 			EventOrganizationMemberRoleUpdated,
 			1,
+			constant.TopicAudit,
 			event,
+		); err != nil {
+			return err
+		}
+
+		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.TargetUserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			return err
+		}
+
+		targetUser, err := q.GetUserByID(ctx, input.TargetUserID)
+		if err != nil {
+			return err
+		}
+
+		notificationPayload, err := json.Marshal(map[string]string{
+			"organization_name": org.OrganizationName,
+			"member_name":       targetUser.Name,
+			"old_role":          targetMember.Role,
+			"new_role":          updatedMember.Role,
+		})
+		if err != nil {
+			return err
+		}
+
+		notificationEvent := notificationcontract.CreatedEvent{
+			NotificationType: "organization_member_role_updated",
+			Category:         notificationcontract.CategoryTransactional,
+			RecipientID:      targetUser.ID.String(),
+			Targets: []notificationcontract.Target{
+				{
+					Channel:     notificationcontract.ChannelEmail,
+					Destination: targetUser.Email,
+				},
+			},
+			Payload: notificationPayload,
+		}
+
+		if err := notificationEvent.Validate(); err != nil {
+			return err
+		}
+
+		if err := createOutboxEvent(
+			ctx,
+			q,
+			organizationMemberAggregateType,
+			input.TargetUserID,
+			notificationcontract.EventTypeCreated,
+			1,
+			constant.TopicNotificationTransactional,
+			notificationEvent,
 		); err != nil {
 			return err
 		}
@@ -419,7 +474,65 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 			input.TargetUserID,
 			EventOrganizationMemberRemoved,
 			1,
+			constant.TopicAudit,
 			event,
+		); err != nil {
+			return err
+		}
+
+		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.TargetUserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			return err
+		}
+
+		targetUser, err := q.GetUserByID(ctx, input.TargetUserID)
+		if err != nil {
+			return err
+		}
+
+		remover, err := q.GetUserByID(ctx, input.UserID)
+		if err != nil {
+			return err
+		}
+
+		notificationPayload, err := json.Marshal(map[string]string{
+			"organization_name": org.OrganizationName,
+			"member_name":       targetUser.Name,
+			"remover_name":      remover.Name,
+		})
+		if err != nil {
+			return err
+		}
+
+		notificationEvent := notificationcontract.CreatedEvent{
+			NotificationType: "organization_member_removed",
+			Category:         notificationcontract.CategoryTransactional,
+			RecipientID:      targetUser.ID.String(),
+			Targets: []notificationcontract.Target{
+				{
+					Channel:     notificationcontract.ChannelEmail,
+					Destination: targetUser.Email,
+				},
+			},
+			Payload: notificationPayload,
+		}
+
+		if err := notificationEvent.Validate(); err != nil {
+			return err
+		}
+
+		if err := createOutboxEvent(
+			ctx,
+			q,
+			organizationMemberAggregateType,
+			input.TargetUserID,
+			notificationcontract.EventTypeCreated,
+			1,
+			constant.TopicNotificationTransactional,
+			notificationEvent,
 		); err != nil {
 			return err
 		}
@@ -558,6 +671,7 @@ func (s *organizationMemberService) LeaveOrganization(
 				input.UserID,
 				EventOrganizationMemberLeft,
 				1,
+				constant.TopicAudit,
 				leaveEvent,
 			); err != nil {
 				return err
@@ -572,9 +686,10 @@ func (s *organizationMemberService) LeaveOrganization(
 				ctx,
 				q,
 				organizationAggregateType,
-				input.OrganizationID,
+				input.UserID,
 				EventOrganizationDeleted,
 				1,
+				constant.TopicAudit,
 				deleteEvent,
 			); err != nil {
 				return err
@@ -710,6 +825,7 @@ func (s *organizationMemberService) LeaveOrganization(
 					input.UserID,
 					EventOrganizationMemberLeft,
 					1,
+					constant.TopicAudit,
 					leaveEvent,
 				); err != nil {
 					return err
@@ -724,9 +840,10 @@ func (s *organizationMemberService) LeaveOrganization(
 					ctx,
 					q,
 					organizationAggregateType,
-					input.OrganizationID,
+					input.UserID,
 					EventOrganizationDeleted,
 					1,
+					constant.TopicAudit,
 					deleteEvent,
 				); err != nil {
 					return err
@@ -734,30 +851,30 @@ func (s *organizationMemberService) LeaveOrganization(
 
 				return nil
 			})
-			if err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					span.SetStatus(
-						codes.Error,
-						"organization membership or organization not found",
-					)
-
-					return LeaveOrganizationOutput{}, service.ErrNotFound
-				}
-
-				span.RecordError(err)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
 				span.SetStatus(
 					codes.Error,
-					"leave organization failed",
-				)
-				s.log.ErrorContext(
-					ctx,
-					"leave organization failed",
-					"error",
-					err,
+					"organization membership or organization not found",
 				)
 
-				return LeaveOrganizationOutput{}, service.ErrInternal
+				return LeaveOrganizationOutput{}, service.ErrNotFound
 			}
+
+			span.RecordError(err)
+			span.SetStatus(
+				codes.Error,
+				"leave organization failed",
+			)
+			s.log.ErrorContext(
+				ctx,
+				"leave organization failed",
+				"error",
+				err,
+			)
+
+			return LeaveOrganizationOutput{}, service.ErrInternal
+		}
 
 			return LeaveOrganizationOutput{
 				OrganizationDeleted: true,
@@ -793,6 +910,7 @@ func (s *organizationMemberService) LeaveOrganization(
 			input.UserID,
 			EventOrganizationMemberLeft,
 			1,
+			constant.TopicAudit,
 			event,
 		); err != nil {
 			return err
@@ -825,7 +943,7 @@ func (s *organizationMemberService) LeaveOrganization(
 	return LeaveOrganizationOutput{}, nil
 }
 
-func createOutboxEvent(ctx context.Context, q repository.Querier, aggregateType string, aggregateID uuid.UUID, eventType string, eventVersion int32, payload any) error {
+func createOutboxEvent(ctx context.Context, q repository.Querier, aggregateType string, aggregateID uuid.UUID, eventType string, eventVersion int32, topic string, payload any) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -847,6 +965,7 @@ func createOutboxEvent(ctx context.Context, q repository.Querier, aggregateType 
 			AggregateID:   aggregateID,
 			EventType:     eventType,
 			EventVersion:  eventVersion,
+			Topic:         topic,
 			Payload:       payloadJSON,
 			TraceID:       traceID,
 		},

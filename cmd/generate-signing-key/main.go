@@ -7,9 +7,9 @@ import (
 	"os"
 
 	"github.com/disillusioned-labs/identity/internal/config"
-	"github.com/disillusioned-labs/identity/internal/platform/crypto"
-	"github.com/disillusioned-labs/identity/internal/platform/postgres"
 	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/platform/crypto"
+	"github.com/disillusioned-labs/platform/postgres"
 
 	"github.com/google/uuid"
 )

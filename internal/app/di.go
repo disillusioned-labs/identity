@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/disillusioned-labs/authkit"
+	"github.com/disillusioned-labs/platform/authkit"
 	"github.com/disillusioned-labs/identity/internal/handler"
 	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
@@ -17,10 +17,10 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/disillusioned-labs/identity/internal/config"
-	"github.com/disillusioned-labs/identity/internal/platform/cache"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/server"
 	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
+	"github.com/disillusioned-labs/platform/cache"
 )
 
 type jwksKeySource struct {

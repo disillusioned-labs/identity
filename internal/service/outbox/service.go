@@ -7,10 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/disillusioned-labs/identity/internal/platform/kafka"
 	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/platform/kafka"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -123,32 +122,32 @@ func (s *outboxService) publishEvent(
 
 	start := time.Now()
 
-	headers := make([]kgo.RecordHeader, 0, 8)
+	headers := make([]kafka.RecordHeader, 0, 8)
 
 	carrier := kafka.NewHeaderCarrier(&headers)
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
 
 	headers = append(
 		headers,
-		kafka.RecordHeader("event-id", event.ID.String()),
-		kafka.RecordHeader("event-type", event.EventType),
-		kafka.RecordHeader("event-version", strconv.Itoa(int(event.EventVersion))),
-		kafka.RecordHeader("source-service", "identity"),
-		kafka.RecordHeader("aggregate-type", event.AggregateType),
-		kafka.RecordHeader("aggregate-id", event.AggregateID.String()),
+		kafka.NewRecordHeader("event-id", event.ID.String()),
+		kafka.NewRecordHeader("event-type", event.EventType),
+		kafka.NewRecordHeader("event-version", strconv.Itoa(int(event.EventVersion))),
+		kafka.NewRecordHeader("source-service", "identity"),
+		kafka.NewRecordHeader("aggregate-type", event.AggregateType),
+		kafka.NewRecordHeader("aggregate-id", event.AggregateID.String()),
 	)
 
 	if event.TraceID.Valid {
 		headers = append(
 			headers,
-			kafka.RecordHeader("trace-id", event.TraceID.String),
+			kafka.NewRecordHeader("trace-id", event.TraceID.String),
 		)
 	}
 
 	err := s.producer.Publish(
 		ctx,
 		kafka.Record{
-			Topic:   event.EventType,
+			Topic:   event.Topic,
 			Key:     []byte(event.AggregateID.String()),
 			Value:   event.Payload,
 			Headers: headers,
@@ -236,6 +235,7 @@ func (s *outboxService) publishEvent(
 	s.log.DebugContext(
 		ctx,
 		"outbox event published",
+		"topic", event.Topic,
 		"event_id", event.ID,
 		"event_type", event.EventType,
 	)

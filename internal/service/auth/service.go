@@ -19,10 +19,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
-	"github.com/disillusioned-labs/identity/internal/platform/crypto"
-	platformjwt "github.com/disillusioned-labs/identity/internal/platform/jwt"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
+	"github.com/disillusioned-labs/platform/crypto"
+	platformjwt "github.com/disillusioned-labs/platform/jwt"
 )
 
 var tracer = otel.Tracer("service/auth")
@@ -144,7 +145,44 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			q,
 			user.ID,
 			EventUserRegistered,
+			constant.TopicAudit,
 			event,
+		)
+		if err != nil {
+			return err
+		}
+
+		notificationPayload, err := json.Marshal(map[string]string{
+			"name": user.Name,
+		})
+		if err != nil {
+			return err
+		}
+
+		notificationEvent := notificationcontract.CreatedEvent{
+			NotificationType: "user_registered",
+			Category:         "transactional",
+			RecipientID:      user.ID.String(),
+			Targets: []notificationcontract.Target{
+				{
+					Channel:     notificationcontract.ChannelEmail,
+					Destination: user.Email,
+				},
+			},
+			Payload: notificationPayload,
+		}
+
+		if err := notificationEvent.Validate(); err != nil {
+			return err
+		}
+
+		err = createOutboxEvent(
+			ctx,
+			q,
+			user.ID,
+			notificationcontract.EventTypeCreated,
+			constant.TopicNotificationTransactional,
+			notificationEvent,
 		)
 		if err != nil {
 			return err
@@ -270,6 +308,7 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 			querier,
 			user.ID,
 			EventUserLoggedIn,
+			constant.TopicAudit,
 			event,
 		)
 		if err != nil {
@@ -470,6 +509,7 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			querier,
 			user.ID,
 			EventTokenRefreshed,
+			constant.TopicAudit,
 			event,
 		)
 		if err != nil {
@@ -596,6 +636,7 @@ func createOutboxEvent(
 	q repository.Querier,
 	aggregateID uuid.UUID,
 	eventType string,
+	topic string,
 	event any,
 ) error {
 	payload, err := json.Marshal(event)
@@ -617,6 +658,7 @@ func createOutboxEvent(
 		AggregateID:   aggregateID,
 		EventType:     eventType,
 		EventVersion:  authEventVersion,
+		Topic:         topic,
 		Payload:       payload,
 		TraceID:       traceID,
 	})

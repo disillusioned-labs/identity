@@ -15,11 +15,14 @@ import (
 	"time"
 
 	"github.com/disillusioned-labs/identity/internal/config"
-	"github.com/disillusioned-labs/identity/internal/platform/cache"
-	"github.com/disillusioned-labs/identity/internal/platform/postgres"
-	"github.com/disillusioned-labs/identity/internal/platform/redis"
-	"github.com/disillusioned-labs/identity/internal/platform/telemetry"
 	"github.com/disillusioned-labs/identity/internal/server"
+	platformconfig "github.com/disillusioned-labs/platform/config"
+	"github.com/disillusioned-labs/platform/cache"
+	"github.com/disillusioned-labs/platform/postgres"
+	"github.com/disillusioned-labs/platform/redis"
+	"github.com/disillusioned-labs/platform/telemetry"
+
+	migrations "github.com/disillusioned-labs/identity/db/migrations"
 
 	goredis "github.com/redis/go-redis/v9"
 	"golang.org/x/sync/errgroup"
@@ -96,7 +99,7 @@ func RunAPI(cfg *config.Config) error {
 	log.Info("connected to postgres", "postgres", cfg.Postgres)
 
 	if cfg.Postgres.Migrate {
-		if err := postgres.Migrate(ctx, pool, log); err != nil {
+		if err := postgres.Migrate(ctx, pool, migrations.FS, log); err != nil {
 			return fmt.Errorf("run migrations: %w", err)
 		}
 	}
@@ -109,7 +112,7 @@ func RunAPI(cfg *config.Config) error {
 		return err
 	}
 	defer closeRedis()
-	redisRequired := cfg.Redis.Mode == config.RedisModeRequired
+	redisRequired := cfg.Redis.Mode == platformconfig.RedisModeRequired
 
 	deps, err := buildDeps(pool, rdb, redisRequired, svcCache, cfg.Auth, log)
 	if err != nil {
@@ -205,7 +208,7 @@ func setupRedis(ctx context.Context, cfg *config.Config, log *slog.Logger) (
 ) {
 	noop := func() {}
 
-	if cfg.Redis.Mode == config.RedisModeDisabled {
+	if cfg.Redis.Mode == platformconfig.RedisModeDisabled {
 		log.Info("redis disabled, running without cache")
 		return nil, nil, noop, nil
 	}
@@ -215,7 +218,7 @@ func setupRedis(ctx context.Context, cfg *config.Config, log *slog.Logger) (
 		redis.DB(cfg.Redis.DB),
 	)
 	if err != nil {
-		if cfg.Redis.Mode == config.RedisModeRequired {
+		if cfg.Redis.Mode == platformconfig.RedisModeRequired {
 			return nil, nil, noop, fmt.Errorf("connect redis (required): %w", err)
 		}
 		log.Warn("redis unreachable, running without cache", "error", err)
