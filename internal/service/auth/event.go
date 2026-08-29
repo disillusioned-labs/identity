@@ -27,6 +27,12 @@ type UserLoggedInEvent struct {
 	IPAddress      string    `json:"ip_address,omitempty"`
 }
 
+type UserLoggedOutEvent struct {
+	UserID    uuid.UUID `json:"user_id"`
+	UserAgent string    `json:"user_agent,omitempty"`
+	IPAddress string    `json:"ip_address,omitempty"`
+}
+
 type TokenRefreshedEvent struct {
 	UserID         uuid.UUID `json:"user_id"`
 	OrganizationID uuid.UUID `json:"organization_id"`

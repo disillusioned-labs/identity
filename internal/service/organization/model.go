@@ -51,6 +51,25 @@ type DeleteInput struct {
 
 type DeleteOutput struct{}
 
+// Transfer
+type TransferInput struct {
+	UserID         uuid.UUID
+	OrganizationID uuid.UUID
+	TargetUserID   uuid.UUID
+}
+
+type TransferOutput struct {
+	Organization OrganizationOutput
+	From         TransferUserOutput
+	To           TransferUserOutput
+}
+
+type TransferUserOutput struct {
+	ID   uuid.UUID
+	Name string
+	Role string
+}
+
 type OrganizationOutput struct {
 	ID   uuid.UUID
 	Name string

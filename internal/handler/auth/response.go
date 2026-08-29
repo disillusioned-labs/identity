@@ -57,6 +57,18 @@ func toRefreshResponse(out authservice.RefreshOutput) TokensResponse {
 	}
 }
 
+func toSwitchOrgResponse(out authservice.SwitchOrgOutput) TokensResponse {
+	return TokensResponse{
+		AccessToken:  out.Tokens.AccessToken,
+		RefreshToken: out.Tokens.RefreshToken,
+		ExpiresIn:    out.Tokens.ExpiresIn,
+	}
+}
+
+func toLogoutResponse(out authservice.LogoutOutput) struct{} {
+	return struct{}{}
+}
+
 func toRegisterResponse(out authservice.RegisterOutput) SessionResponse {
 	return SessionResponse{
 		AccessToken:  out.Tokens.AccessToken,

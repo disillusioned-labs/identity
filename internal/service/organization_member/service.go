@@ -33,15 +33,35 @@ type OrganizationMemberService interface {
 	LeaveOrganization(ctx context.Context, input LeaveOrganizationInput) (LeaveOrganizationOutput, error)
 }
 
-type organizationMemberService struct {
-	repo repository.Store
-	log  *slog.Logger
+// RevocationWriter records that a user's access to one organization has been
+// revoked, so their still-valid access tokens carrying that org_id are
+// rejected before expiry. It is infrastructure, not another service; a nil
+// writer disables the denylist write.
+type RevocationWriter interface {
+	RevokeMember(ctx context.Context, organizationID, userID string) error
 }
 
-func NewOrganizationMemberService(repo repository.Store, log *slog.Logger) OrganizationMemberService {
+type organizationMemberService struct {
+	repo        repository.Store
+	revocations RevocationWriter
+	log         *slog.Logger
+}
+
+func NewOrganizationMemberService(repo repository.Store, revocations RevocationWriter, log *slog.Logger) OrganizationMemberService {
 	return &organizationMemberService{
-		repo: repo,
-		log:  log,
+		repo:        repo,
+		revocations: revocations,
+		log:         log,
+	}
+}
+
+func (s *organizationMemberService) revokeMemberAccess(ctx context.Context, organizationID, userID uuid.UUID) {
+	if s.revocations == nil {
+		return
+	}
+
+	if err := s.revocations.RevokeMember(ctx, organizationID.String(), userID.String()); err != nil {
+		s.log.ErrorContext(ctx, "write member revocation failed", "error", err, "organization_id", organizationID, "user_id", userID)
 	}
 }
 
@@ -567,6 +587,8 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 		attribute.String("target_user.id", input.TargetUserID.String()),
 	)
 
+	s.revokeMemberAccess(ctx, input.OrganizationID, input.TargetUserID)
+
 	return RemoveOrganizationMemberOutput{}, nil
 }
 
@@ -729,6 +751,8 @@ func (s *organizationMemberService) LeaveOrganization(
 			),
 		)
 
+		s.revokeMemberAccess(ctx, input.OrganizationID, input.UserID)
+
 		return LeaveOrganizationOutput{
 			OrganizationDeleted: true,
 		}, nil
@@ -876,6 +900,8 @@ func (s *organizationMemberService) LeaveOrganization(
 			return LeaveOrganizationOutput{}, service.ErrInternal
 		}
 
+			s.revokeMemberAccess(ctx, input.OrganizationID, input.UserID)
+
 			return LeaveOrganizationOutput{
 				OrganizationDeleted: true,
 			}, nil
@@ -939,6 +965,8 @@ func (s *organizationMemberService) LeaveOrganization(
 
 		return LeaveOrganizationOutput{}, service.ErrInternal
 	}
+
+	s.revokeMemberAccess(ctx, input.OrganizationID, input.UserID)
 
 	return LeaveOrganizationOutput{}, nil
 }

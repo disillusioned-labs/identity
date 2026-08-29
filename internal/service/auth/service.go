@@ -38,6 +38,8 @@ type AuthService interface {
 	Login(ctx context.Context, input LoginInput) (LoginOutput, error)
 	Me(ctx context.Context, input MeInput) (MeOutput, error)
 	Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error)
+	Logout(ctx context.Context, input LogoutInput) (LogoutOutput, error)
+	SwitchOrg(ctx context.Context, input SwitchOrgInput) (SwitchOrgOutput, error)
 }
 
 type authService struct {
@@ -46,16 +48,18 @@ type authService struct {
 	accessTokenTTL  time.Duration
 	refreshTokenTTL time.Duration
 	issuer          string
+	revocations     *RevocationStore
 	log             *slog.Logger
 }
 
-func NewAuthService(repo repository.Store, masterKey []byte, accessTokenTTL time.Duration, refreshTokenTTL time.Duration, issuer string, log *slog.Logger) AuthService {
+func NewAuthService(repo repository.Store, masterKey []byte, accessTokenTTL time.Duration, refreshTokenTTL time.Duration, issuer string, revocations *RevocationStore, log *slog.Logger) AuthService {
 	return &authService{
 		repo:            repo,
 		masterKey:       masterKey,
 		accessTokenTTL:  accessTokenTTL,
 		refreshTokenTTL: refreshTokenTTL,
 		issuer:          issuer,
+		revocations:     revocations,
 		log:             log,
 	}
 }
@@ -419,6 +423,12 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			return RefreshOutput{}, service.ErrInternal
 		}
 
+		if s.revocations != nil {
+			if err := s.revocations.RevokeUser(ctx, stored.UserID.String()); err != nil {
+				s.log.ErrorContext(ctx, "write user revocation failed", "error", err, "user_id", stored.UserID)
+			}
+		}
+
 		span.SetStatus(codes.Error, "refresh token reuse detected")
 		return RefreshOutput{}, service.ErrUnauthenticated
 	}
@@ -531,6 +541,170 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 	}
 
 	return RefreshOutput{Tokens: TokensOutput(tokens)}, nil
+}
+
+func (s *authService) Logout(ctx context.Context, input LogoutInput) (LogoutOutput, error) {
+	ctx, span := tracer.Start(ctx, "AuthService.Logout")
+	defer span.End()
+
+	stored, err := s.repo.GetRefreshTokenByHash(ctx, platformjwt.HashRefreshToken(input.RefreshToken))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "refresh token not found")
+			return LogoutOutput{}, service.ErrUnauthenticated
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query refresh token failed")
+		s.log.ErrorContext(ctx, "query refresh token failed", "error", err)
+		return LogoutOutput{}, service.ErrInternal
+	}
+
+	if stored.RevokedAt.Valid {
+		return LogoutOutput{}, nil
+	}
+
+	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
+		revoked, err := querier.RevokeRefreshToken(ctx, stored.ID)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "revoke refresh token failed")
+			s.log.ErrorContext(ctx, "revoke refresh token failed", "error", err, "user_id", stored.UserID, "refresh_token_id", stored.ID)
+			return err
+		}
+
+		if revoked == 0 {
+			return nil
+		}
+
+		event := UserLoggedOutEvent{
+			UserID:    stored.UserID,
+			UserAgent: input.UserAgent,
+			IPAddress: input.IPAddress,
+		}
+
+		return createOutboxEvent(
+			ctx,
+			querier,
+			stored.UserID,
+			EventUserLoggedOut,
+			constant.TopicAudit,
+			event,
+		)
+	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "logout transaction failed")
+		s.log.ErrorContext(ctx, "logout transaction failed", "error", err, "user_id", stored.UserID)
+		return LogoutOutput{}, service.ErrInternal
+	}
+
+	return LogoutOutput{}, nil
+}
+
+func (s *authService) SwitchOrg(ctx context.Context, input SwitchOrgInput) (SwitchOrgOutput, error) {
+	ctx, span := tracer.Start(ctx, "AuthService.SwitchOrg")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("user.id", input.UserID.String()),
+		attribute.String("organization.id", input.OrganizationID.String()),
+	)
+
+	stored, err := s.repo.GetRefreshTokenByHash(ctx, platformjwt.HashRefreshToken(input.RefreshToken))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "refresh token not found")
+			return SwitchOrgOutput{}, service.ErrUnauthenticated
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query refresh token failed")
+		s.log.ErrorContext(ctx, "query refresh token failed", "error", err)
+		return SwitchOrgOutput{}, service.ErrInternal
+	}
+
+	if stored.UserID != input.UserID || stored.RevokedAt.Valid || !stored.ExpiresAt.After(time.Now()) {
+		span.SetStatus(codes.Error, "refresh token is not usable")
+		return SwitchOrgOutput{}, service.ErrUnauthenticated
+	}
+
+	var tokens tokens
+
+	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
+		membership, err := querier.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.UserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				span.SetStatus(codes.Error, "not a member of target organization")
+				return service.ErrForbidden
+			}
+
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "query user organization failed")
+			s.log.ErrorContext(ctx, "query user organization failed", "error", err, "user_id", input.UserID, "organization_id", input.OrganizationID)
+			return err
+		}
+
+		revoked, err := querier.RevokeRefreshToken(ctx, stored.ID)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "revoke refresh token failed")
+			s.log.ErrorContext(ctx, "revoke refresh token failed", "error", err, "user_id", input.UserID, "refresh_token_id", stored.ID)
+			return err
+		}
+
+		if revoked == 0 {
+			span.SetStatus(codes.Error, "refresh token revoked concurrently")
+			return service.ErrUnauthenticated
+		}
+
+		rows, err := querier.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
+			ID:                       input.UserID,
+			LastActiveOrganizationID: &input.OrganizationID,
+		})
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "set last active organization failed")
+			s.log.ErrorContext(ctx, "set last active organization failed", "error", err, "user_id", input.UserID, "organization_id", input.OrganizationID)
+			return err
+		}
+
+		if rows == 0 {
+			return service.ErrUnauthenticated
+		}
+
+		tokens, err = s.issueTokens(ctx, querier, issueParams{
+			UserID:         input.UserID,
+			OrganizationID: membership.OrganizationID,
+			Role:           membership.Role,
+			UserAgent:      input.UserAgent,
+			IPAddress:      input.IPAddress,
+		})
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			return SwitchOrgOutput{}, service.ErrForbidden
+		}
+
+		if errors.Is(err, service.ErrUnauthenticated) {
+			return SwitchOrgOutput{}, service.ErrUnauthenticated
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "switch organization transaction failed")
+		s.log.ErrorContext(ctx, "switch organization transaction failed", "error", err, "user_id", input.UserID, "organization_id", input.OrganizationID)
+		return SwitchOrgOutput{}, service.ErrInternal
+	}
+
+	return SwitchOrgOutput{Tokens: TokensOutput(tokens)}, nil
 }
 
 func (s *authService) issueTokens(ctx context.Context, querier repository.Querier, params issueParams) (tokens, error) {

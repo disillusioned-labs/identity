@@ -14,3 +14,12 @@ type LoginRequest struct {
 type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token" validate:"required"`
 }
+
+type LogoutRequest struct {
+	RefreshToken string `json:"refresh_token" validate:"required"`
+}
+
+type SwitchOrgRequest struct {
+	OrganizationID string `json:"organization_id" validate:"required,uuid"`
+	RefreshToken   string `json:"refresh_token" validate:"required"`
+}

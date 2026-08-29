@@ -66,6 +66,28 @@ type RefreshOutput struct {
 	Tokens TokensOutput
 }
 
+// Logout
+type LogoutInput struct {
+	RefreshToken string
+	UserAgent    string
+	IPAddress    string
+}
+
+type LogoutOutput struct{}
+
+// SwitchOrg
+type SwitchOrgInput struct {
+	UserID         uuid.UUID
+	OrganizationID uuid.UUID
+	RefreshToken   string
+	UserAgent      string
+	IPAddress      string
+}
+
+type SwitchOrgOutput struct {
+	Tokens TokensOutput
+}
+
 type UserOutput struct {
 	ID    uuid.UUID
 	Name  string

@@ -32,7 +32,10 @@ type OrganizationService interface {
 	GetOrganization(ctx context.Context, input GetInput) (GetOutput, error)
 	UpdateOrganization(ctx context.Context, input UpdateInput) (UpdateOutput, error)
 	DeleteOrganization(ctx context.Context, input DeleteInput) (DeleteOutput, error)
+	Transfer(ctx context.Context, input TransferInput) (TransferOutput, error)
 }
+
+var ErrCannotTransferToSelf = service.NewError("CANNOT_TRANSFER_TO_SELF", 400, "cannot transfer ownership to yourself")
 
 type organizationService struct {
 	repo repository.Store
@@ -414,6 +417,135 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 	}
 
 	return DeleteOutput{}, nil
+}
+
+func (s *organizationService) Transfer(ctx context.Context, input TransferInput) (TransferOutput, error) {
+	ctx, span := tracer.Start(ctx, "OrganizationService.Transfer")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("organization.id", input.OrganizationID.String()),
+		attribute.String("user.id", input.UserID.String()),
+	)
+
+	if input.TargetUserID == input.UserID {
+		span.SetStatus(codes.Error, "cannot transfer ownership to yourself")
+		return TransferOutput{}, ErrCannotTransferToSelf
+	}
+
+	var output TransferOutput
+
+	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		currentMember, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.UserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return service.ErrNotFound
+			}
+			return err
+		}
+
+		if currentMember.Role != constant.RoleOwner {
+			return service.ErrForbidden
+		}
+
+		targetMember, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.TargetUserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return service.ErrNotFound
+			}
+			return err
+		}
+
+		rows, err := q.UpdateOrganizationMemberRole(ctx, repository.UpdateOrganizationMemberRoleParams{
+			Role:           constant.RoleAdmin,
+			OrganizationID: input.OrganizationID,
+			UserID:         input.UserID,
+		})
+		if err != nil {
+			return err
+		}
+
+		if rows == 0 {
+			return pgx.ErrNoRows
+		}
+
+		rows, err = q.UpdateOrganizationMemberRole(ctx, repository.UpdateOrganizationMemberRoleParams{
+			Role:           constant.RoleOwner,
+			OrganizationID: input.OrganizationID,
+			UserID:         input.TargetUserID,
+		})
+		if err != nil {
+			return err
+		}
+
+		if rows == 0 {
+			return pgx.ErrNoRows
+		}
+
+		event := OrganizationOwnershipTransferredEvent{
+			OrganizationID: input.OrganizationID,
+			FromUserID:     input.UserID,
+			ToUserID:       input.TargetUserID,
+		}
+		err = createOrganizationOutboxEvent(ctx, q, input.OrganizationID, EventOrganizationOwnershipTransferred, constant.TopicAudit, event)
+		if err != nil {
+			return err
+		}
+
+		output = TransferOutput{
+			Organization: OrganizationOutput{
+				ID:   input.OrganizationID,
+				Name: targetMember.OrganizationName,
+				Type: targetMember.OrganizationType,
+				Role: constant.RoleOwner,
+			},
+			From: TransferUserOutput{
+				ID:   currentMember.UserID,
+				Name: currentMember.UserName,
+				Role: constant.RoleAdmin,
+			},
+			To: TransferUserOutput{
+				ID:   targetMember.UserID,
+				Name: targetMember.UserName,
+				Role: constant.RoleOwner,
+			},
+		}
+
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrCannotTransferToSelf) {
+			return TransferOutput{}, ErrCannotTransferToSelf
+		}
+
+		if errors.Is(err, service.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "organization or member not found")
+			return TransferOutput{}, service.ErrNotFound
+		}
+
+		if errors.Is(err, service.ErrForbidden) {
+			span.SetStatus(codes.Error, "only organization owner can transfer ownership")
+			return TransferOutput{}, service.ErrForbidden
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "transfer ownership failed")
+		s.log.ErrorContext(ctx, "transfer ownership failed", "error", err, "user_id", input.UserID, "target_user_id", input.TargetUserID, "organization_id", input.OrganizationID)
+		return TransferOutput{}, service.ErrInternal
+	}
+
+	span.SetAttributes(
+		attribute.String("from_user.id", output.From.ID.String()),
+		attribute.String("to_user.id", output.To.ID.String()),
+	)
+
+	return output, nil
 }
 
 func createOrganizationOutboxEvent(

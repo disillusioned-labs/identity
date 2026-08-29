@@ -195,6 +195,55 @@ func (h *OrganizationHandler) deleteOrganization(w http.ResponseWriter, r *http.
 	handler.OK(w, http.StatusOK, toDeleteResponse(output))
 }
 
+func (h *OrganizationHandler) transferOrganization(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "OrganizationHandler.transferOrganization")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	userID, ok := userIDFromClaims(w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "get user id from claims failed")
+		return
+	}
+
+	organizationID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid organization id")
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid organization id")
+		return
+	}
+
+	req, ok := handler.DecodeValid[TransferRequest](w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "decode/validate failed")
+		return
+	}
+
+	targetUserID, err := uuid.Parse(strings.TrimSpace(req.UserID))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid target user id")
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid user id")
+		return
+	}
+
+	output, err := h.service.Transfer(ctx, organizationservice.TransferInput{
+		UserID:         userID,
+		OrganizationID: organizationID,
+		TargetUserID:   targetUserID,
+	})
+	if err != nil {
+		span.SetStatus(codes.Error, "transfer ownership failed")
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+
+	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("target_user.id", targetUserID.String()))
+
+	handler.OK(w, http.StatusOK, toTransferResponse(output))
+}
+
 func userIDFromClaims(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	claims, ok := handler.ClaimsFrom(r.Context())
 	if !ok {

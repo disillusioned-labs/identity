@@ -6,6 +6,8 @@ const (
 	EventOrganizationCreated = "organization.created"
 	EventOrganizationUpdated = "organization.updated"
 	EventOrganizationDeleted = "organization.deleted"
+
+	EventOrganizationOwnershipTransferred = "organization.ownership_transferred"
 )
 
 type OrganizationCreatedEvent struct {
@@ -29,4 +31,10 @@ type OrganizationDeletedEvent struct {
 	UserID                    uuid.UUID  `json:"user_id"`
 	Type                      string     `json:"type"`
 	ReplacementOrganizationID *uuid.UUID `json:"replacement_organization_id,omitempty"`
+}
+
+type OrganizationOwnershipTransferredEvent struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	FromUserID     uuid.UUID `json:"from_user_id"`
+	ToUserID       uuid.UUID `json:"to_user_id"`
 }

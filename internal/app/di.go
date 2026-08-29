@@ -57,12 +57,24 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		)
 	}
 
+	var (
+		revocationStore   *authservice.RevocationStore
+		memberRevocations organizationmemberservice.RevocationWriter
+		verifierOptions   []authkit.Option
+	)
+	if rdb != nil {
+		revocationStore = authservice.NewRevocationStore(rdb, authCfg.AccessTokenTTL)
+		memberRevocations = revocationStore
+		verifierOptions = append(verifierOptions, authkit.WithDenylist(revocationStore))
+	}
+
 	auth := authservice.NewAuthService(
 		repo,
 		masterKey,
 		authCfg.AccessTokenTTL,
 		authCfg.RefreshTokenTTL,
 		authCfg.Issuer,
+		revocationStore,
 		log,
 	)
 
@@ -78,6 +90,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 
 	organizationMemberService := organizationmemberservice.NewOrganizationMemberService(
 		repo,
+		memberRevocations,
 		log,
 	)
 
@@ -90,11 +103,13 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		authkit.Config{
 			Issuer: authCfg.Issuer,
 		},
-		authkit.WithKeySource(jwksKeySource{
-			service: jwksService,
-		}),
-		authkit.WithErrorHandler(authErrorHandler),
-		authkit.WithLogger(log),
+		append([]authkit.Option{
+			authkit.WithKeySource(jwksKeySource{
+				service: jwksService,
+			}),
+			authkit.WithErrorHandler(authErrorHandler),
+			authkit.WithLogger(log),
+		}, verifierOptions...)...,
 	)
 
 	return server.Deps{

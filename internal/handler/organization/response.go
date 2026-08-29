@@ -69,3 +69,33 @@ func toUpdateResponse(output organizationservice.UpdateOutput) UpdateResponse {
 func toDeleteResponse(output organizationservice.DeleteOutput) struct{} {
 	return struct{}{}
 }
+
+type TransferUserResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
+type TransferResponse struct {
+	Organization OrganizationResponse `json:"organization"`
+	From         TransferUserResponse `json:"from"`
+	To           TransferUserResponse `json:"to"`
+	Notice       string               `json:"notice"`
+}
+
+func toTransferResponse(output organizationservice.TransferOutput) TransferResponse {
+	return TransferResponse{
+		Organization: newOrganizationResponse(output.Organization),
+		From: TransferUserResponse{
+			ID:   output.From.ID.String(),
+			Name: output.From.Name,
+			Role: output.From.Role,
+		},
+		To: TransferUserResponse{
+			ID:   output.To.ID.String(),
+			Name: output.To.Name,
+			Role: output.To.Role,
+		},
+		Notice: "approval rules are not transferred; they belong to the expense service",
+	}
+}

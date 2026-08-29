@@ -100,6 +100,84 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	handler.OK(w, http.StatusOK, toRefreshResponse(output))
 }
 
+func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.logout")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	req, ok := handler.DecodeValid[LogoutRequest](w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "decode/validate failed")
+		return
+	}
+
+	output, err := h.service.Logout(ctx, authservice.LogoutInput{
+		RefreshToken: strings.TrimSpace(req.RefreshToken),
+		UserAgent:    r.UserAgent(),
+		IPAddress:    clientIP(r),
+	})
+	if err != nil {
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+	handler.OK(w, http.StatusOK, toLogoutResponse(output))
+}
+
+func (h *AuthHandler) switchOrg(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.switchOrg")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	claims, ok := handler.ClaimsFrom(r.Context())
+	if !ok {
+		handler.WriteError(
+			w,
+			http.StatusUnauthorized,
+			handler.CodeUnauthorized,
+			"unauthorized",
+		)
+		return
+	}
+
+	userID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid claim subject")
+		handler.WriteError(
+			w,
+			http.StatusUnauthorized,
+			handler.CodeUnauthorized,
+			"unauthorized",
+		)
+		return
+	}
+
+	req, ok := handler.DecodeValid[SwitchOrgRequest](w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "decode/validate failed")
+		return
+	}
+
+	organizationID, err := uuid.Parse(strings.TrimSpace(req.OrganizationID))
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid organization id")
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid organization id")
+		return
+	}
+
+	output, err := h.service.SwitchOrg(ctx, authservice.SwitchOrgInput{
+		UserID:         userID,
+		OrganizationID: organizationID,
+		RefreshToken:   strings.TrimSpace(req.RefreshToken),
+		UserAgent:      r.UserAgent(),
+		IPAddress:      clientIP(r),
+	})
+	if err != nil {
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+	handler.OK(w, http.StatusOK, toSwitchOrgResponse(output))
+}
+
 func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	ctx, span := tracer.Start(r.Context(), "AuthHandler.me")
 	defer span.End()
