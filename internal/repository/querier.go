@@ -25,6 +25,7 @@ type Querier interface {
 	ExpireInvitation(ctx context.Context, id uuid.UUID) (int64, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
 	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (GetInvitationByTokenHashRow, error)
+	GetOldestPendingOutboxAgeSeconds(ctx context.Context) (int64, error)
 	GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error)
 	GetOrganizationInvitation(ctx context.Context, id uuid.UUID) (OrganizationInvitation, error)
 	GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error)
