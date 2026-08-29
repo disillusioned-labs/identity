@@ -2,6 +2,10 @@ package organization_invitation
 
 import "github.com/go-chi/chi/v5"
 
+func (h *OrganizationInvitationHandler) PublicRoutes(r chi.Router) {
+	r.Get("/invitations/token/{token}", h.getInvitation)
+}
+
 func (h *OrganizationInvitationHandler) ProtectedRoutes(r chi.Router) {
 	r.Get("/invitations", h.listMyInvitations)
 

@@ -176,6 +176,8 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 			organizationMemberHandler.ProtectedRoutes(r)
 			organizationInvitationHandler.ProtectedRoutes(r)
 		})
+
+		organizationInvitationHandler.PublicRoutes(r)
 	})
 
 	// otelhttp wraps the whole router: creates the server span, extracts
