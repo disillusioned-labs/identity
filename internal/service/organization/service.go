@@ -7,16 +7,14 @@ import (
 	"log/slog"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
-	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var tracer = otel.Tracer("service/organization")
@@ -34,8 +32,6 @@ type OrganizationService interface {
 	DeleteOrganization(ctx context.Context, input DeleteInput) (DeleteOutput, error)
 	Transfer(ctx context.Context, input TransferInput) (TransferOutput, error)
 }
-
-var ErrCannotTransferToSelf = service.NewError("CANNOT_TRANSFER_TO_SELF", 400, "cannot transfer ownership to yourself")
 
 type organizationService struct {
 	repo repository.Store
@@ -119,7 +115,7 @@ func (s *organizationService) CreateOrganization(ctx context.Context, input Crea
 			Type:           organization.Type,
 			Role:           constant.RoleOwner,
 		}
-		err = createOrganizationOutboxEvent(ctx, q, input.UserID, EventOrganizationCreated, constant.TopicAudit, event)
+		err = service.Emit(ctx, q, organizationAggregateType, input.UserID, EventOrganizationCreated, organizationEventVersion, constant.TopicAudit, event)
 		if err != nil {
 			return err
 		}
@@ -234,7 +230,7 @@ func (s *organizationService) UpdateOrganization(ctx context.Context, input Upda
 			Type:           organization.Type,
 			Role:           currentMember.Role,
 		}
-		err = createOrganizationOutboxEvent(ctx, q, input.UserID, EventOrganizationUpdated, constant.TopicAudit, event)
+		err = service.Emit(ctx, q, organizationAggregateType, input.UserID, EventOrganizationUpdated, organizationEventVersion, constant.TopicAudit, event)
 		if err != nil {
 			return err
 		}
@@ -341,7 +337,7 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 			Type:                      organizationType,
 			ReplacementOrganizationID: replacementID,
 		}
-		err = createOrganizationOutboxEvent(ctx, q, input.UserID, EventOrganizationDeleted, constant.TopicAudit, event)
+		err = service.Emit(ctx, q, organizationAggregateType, input.UserID, EventOrganizationDeleted, organizationEventVersion, constant.TopicAudit, event)
 		if err != nil {
 			return err
 		}
@@ -377,11 +373,13 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 				return err
 			}
 
-			if err := createOrganizationOutboxEvent(
+			if err := service.Emit(
 				ctx,
 				q,
+				organizationAggregateType,
 				member.UserID,
 				notificationcontract.EventTypeCreated,
+				organizationEventVersion,
 				constant.TopicNotificationTransactional,
 				notificationEvent,
 			); err != nil {
@@ -408,9 +406,7 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 		return DeleteOutput{}, service.ErrInternal
 	}
 
-	span.SetAttributes(
-		attribute.String("organization.type", organizationType),
-	)
+	span.SetAttributes(attribute.String("organization.type", organizationType),)
 
 	if replacementID != nil {
 		span.SetAttributes(attribute.String("replacement_organization.id", replacementID.String()))
@@ -430,7 +426,7 @@ func (s *organizationService) Transfer(ctx context.Context, input TransferInput)
 
 	if input.TargetUserID == input.UserID {
 		span.SetStatus(codes.Error, "cannot transfer ownership to yourself")
-		return TransferOutput{}, ErrCannotTransferToSelf
+		return TransferOutput{}, service.ErrCannotTransferToSelf
 	}
 
 	var output TransferOutput
@@ -493,7 +489,7 @@ func (s *organizationService) Transfer(ctx context.Context, input TransferInput)
 			FromUserID:     input.UserID,
 			ToUserID:       input.TargetUserID,
 		}
-		err = createOrganizationOutboxEvent(ctx, q, input.OrganizationID, EventOrganizationOwnershipTransferred, constant.TopicAudit, event)
+		err = service.Emit(ctx, q, organizationAggregateType, input.OrganizationID, EventOrganizationOwnershipTransferred, organizationEventVersion, constant.TopicAudit, event)
 		if err != nil {
 			return err
 		}
@@ -520,8 +516,8 @@ func (s *organizationService) Transfer(ctx context.Context, input TransferInput)
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, ErrCannotTransferToSelf) {
-			return TransferOutput{}, ErrCannotTransferToSelf
+		if errors.Is(err, service.ErrCannotTransferToSelf) {
+			return TransferOutput{}, service.ErrCannotTransferToSelf
 		}
 
 		if errors.Is(err, service.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
@@ -548,36 +544,4 @@ func (s *organizationService) Transfer(ctx context.Context, input TransferInput)
 	return output, nil
 }
 
-func createOrganizationOutboxEvent(
-	ctx context.Context,
-	q repository.Querier,
-	aggregateID uuid.UUID,
-	eventType string,
-	topic string,
-	event any,
-) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
 
-	spanCtx := trace.SpanContextFromContext(ctx)
-	var traceID pgtype.Text
-	if spanCtx.IsValid() {
-		traceID = pgtype.Text{
-			String: spanCtx.TraceID().String(),
-			Valid:  true,
-		}
-	}
-
-	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
-		AggregateType: organizationAggregateType,
-		AggregateID:   aggregateID,
-		EventType:     eventType,
-		EventVersion:  organizationEventVersion,
-		Topic:         topic,
-		Payload:       payload,
-		TraceID:       traceID,
-	})
-	return err
-}

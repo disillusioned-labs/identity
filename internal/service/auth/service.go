@@ -15,13 +15,12 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
-	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/disillusioned-labs/platform/crypto"
 	platformjwt "github.com/disillusioned-labs/platform/jwt"
 )
@@ -144,11 +143,9 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			IPAddress:      input.IPAddress,
 		}
 
-		err = createOutboxEvent(
-			ctx,
-			q,
-			user.ID,
+		err = service.Emit(ctx, q, authAggregateType, user.ID,
 			EventUserRegistered,
+			authEventVersion,
 			constant.TopicAudit,
 			event,
 		)
@@ -180,11 +177,9 @@ func (s *authService) Register(ctx context.Context, input RegisterInput) (Regist
 			return err
 		}
 
-		err = createOutboxEvent(
-			ctx,
-			q,
-			user.ID,
+		err = service.Emit(ctx, q, authAggregateType, user.ID,
 			notificationcontract.EventTypeCreated,
+			authEventVersion,
 			constant.TopicNotificationTransactional,
 			notificationEvent,
 		)
@@ -307,11 +302,9 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 			IPAddress:      input.IPAddress,
 		}
 
-		err = createOutboxEvent(
-			ctx,
-			querier,
-			user.ID,
+		err = service.Emit(ctx, querier, authAggregateType, user.ID,
 			EventUserLoggedIn,
+			authEventVersion,
 			constant.TopicAudit,
 			event,
 		)
@@ -514,11 +507,9 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 			IPAddress:      input.IPAddress,
 		}
 
-		err = createOutboxEvent(
-			ctx,
-			querier,
-			user.ID,
+		err = service.Emit(ctx, querier, authAggregateType, user.ID,
 			EventTokenRefreshed,
+			authEventVersion,
 			constant.TopicAudit,
 			event,
 		)
@@ -583,11 +574,9 @@ func (s *authService) Logout(ctx context.Context, input LogoutInput) (LogoutOutp
 			IPAddress: input.IPAddress,
 		}
 
-		return createOutboxEvent(
-			ctx,
-			querier,
-			stored.UserID,
+		return service.Emit(ctx, querier, authAggregateType, stored.UserID,
 			EventUserLoggedOut,
+			authEventVersion,
 			constant.TopicAudit,
 			event,
 		)
@@ -805,36 +794,3 @@ func selectActiveOrganization(memberships []repository.ListUserOrganizationsRow,
 	return memberships[0]
 }
 
-func createOutboxEvent(
-	ctx context.Context,
-	q repository.Querier,
-	aggregateID uuid.UUID,
-	eventType string,
-	topic string,
-	event any,
-) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-
-	spanCtx := trace.SpanContextFromContext(ctx)
-	var traceID pgtype.Text
-	if spanCtx.IsValid() {
-		traceID = pgtype.Text{
-			String: spanCtx.TraceID().String(),
-			Valid:  true,
-		}
-	}
-
-	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
-		AggregateType: authAggregateType,
-		AggregateID:   aggregateID,
-		EventType:     eventType,
-		EventVersion:  authEventVersion,
-		Topic:         topic,
-		Payload:       payload,
-		TraceID:       traceID,
-	})
-	return err
-}

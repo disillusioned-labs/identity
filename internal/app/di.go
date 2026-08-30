@@ -58,13 +58,11 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 	}
 
 	var (
-		revocationStore   *authservice.RevocationStore
-		memberRevocations organizationmemberservice.RevocationWriter
-		verifierOptions   []authkit.Option
+		revocationStore *authservice.RevocationStore
+		verifierOptions []authkit.Option
 	)
 	if rdb != nil {
 		revocationStore = authservice.NewRevocationStore(rdb, authCfg.AccessTokenTTL)
-		memberRevocations = revocationStore
 		verifierOptions = append(verifierOptions, authkit.WithDenylist(revocationStore))
 	}
 
@@ -90,7 +88,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 
 	organizationMemberService := organizationmemberservice.NewOrganizationMemberService(
 		repo,
-		memberRevocations,
+		revocationStore,
 		log,
 	)
 

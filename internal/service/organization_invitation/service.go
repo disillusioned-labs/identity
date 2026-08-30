@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/disillusioned-labs/identity/internal/constant"
-	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/identity/internal/service"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
+
+	"github.com/disillusioned-labs/identity/internal/constant"
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -859,30 +859,7 @@ func createOrganizationInvitationOutboxEvent(
 	topic string,
 	event any,
 ) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-
-	spanCtx := trace.SpanContextFromContext(ctx)
-	var traceID pgtype.Text
-	if spanCtx.IsValid() {
-		traceID = pgtype.Text{
-			String: spanCtx.TraceID().String(),
-			Valid:  true,
-		}
-	}
-
-	_, err = q.CreateOutboxEvent(ctx, repository.CreateOutboxEventParams{
-		AggregateType: organizationInvitationAggregateType,
-		AggregateID:   aggregateID,
-		EventType:     eventType,
-		EventVersion:  organizationInvitationEventVersion,
-		Topic:         topic,
-		Payload:       payload,
-		TraceID:       traceID,
-	})
-	return err
+	return service.Emit(ctx, q, organizationInvitationAggregateType, aggregateID, eventType, organizationInvitationEventVersion, topic, event)
 }
 
 func normalizeEmail(email string) string {

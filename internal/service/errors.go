@@ -41,4 +41,5 @@ var (
 	ErrInvitationRevoked         = NewError("INVITATION_REVOKED", 410, "invitation has been revoked")
 	ErrInvitationAlreadyAccepted = NewError("INVITATION_ALREADY_ACCEPTED", 409, "invitation has already been accepted")
 	ErrInvalidEmail              = NewError("INVALID_EMAIL", 400, "invalid email address")
+	ErrCannotTransferToSelf      = NewError("CANNOT_TRANSFER_TO_SELF", 400, "cannot transfer ownership to yourself")
 )
