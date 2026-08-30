@@ -7,16 +7,14 @@ import (
 	"log/slog"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
-	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var tracer = otel.Tracer("service/organization_member")
@@ -33,35 +31,21 @@ type OrganizationMemberService interface {
 	LeaveOrganization(ctx context.Context, input LeaveOrganizationInput) (LeaveOrganizationOutput, error)
 }
 
-// RevocationWriter records that a user's access to one organization has been
-// revoked, so their still-valid access tokens carrying that org_id are
-// rejected before expiry. It is infrastructure, not another service; a nil
-// writer disables the denylist write.
-type RevocationWriter interface {
+type revocationWriter interface {
 	RevokeMember(ctx context.Context, organizationID, userID string) error
 }
 
 type organizationMemberService struct {
 	repo        repository.Store
-	revocations RevocationWriter
+	revocations revocationWriter
 	log         *slog.Logger
 }
 
-func NewOrganizationMemberService(repo repository.Store, revocations RevocationWriter, log *slog.Logger) OrganizationMemberService {
+func NewOrganizationMemberService(repo repository.Store, revocations revocationWriter, log *slog.Logger) OrganizationMemberService {
 	return &organizationMemberService{
 		repo:        repo,
 		revocations: revocations,
 		log:         log,
-	}
-}
-
-func (s *organizationMemberService) revokeMemberAccess(ctx context.Context, organizationID, userID uuid.UUID) {
-	if s.revocations == nil {
-		return
-	}
-
-	if err := s.revocations.RevokeMember(ctx, organizationID.String(), userID.String()); err != nil {
-		s.log.ErrorContext(ctx, "write member revocation failed", "error", err, "organization_id", organizationID, "user_id", userID)
 	}
 }
 
@@ -253,7 +237,7 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(
 			Role:           updatedMember.Role,
 		}
 
-		if err := createOutboxEvent(
+		if err := service.Emit(
 			ctx,
 			q,
 			organizationMemberAggregateType,
@@ -306,7 +290,7 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(
 			return err
 		}
 
-		if err := createOutboxEvent(
+		if err := service.Emit(
 			ctx,
 			q,
 			organizationMemberAggregateType,
@@ -487,7 +471,7 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 			RemovedBy:      input.UserID,
 		}
 
-		if err := createOutboxEvent(
+		if err := service.Emit(
 			ctx,
 			q,
 			organizationMemberAggregateType,
@@ -544,7 +528,7 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 			return err
 		}
 
-		if err := createOutboxEvent(
+		if err := service.Emit(
 			ctx,
 			q,
 			organizationMemberAggregateType,
@@ -686,7 +670,7 @@ func (s *organizationMemberService) LeaveOrganization(
 				UserID:         input.UserID,
 			}
 
-			if err := createOutboxEvent(
+			if err := service.Emit(
 				ctx,
 				q,
 				organizationMemberAggregateType,
@@ -704,7 +688,7 @@ func (s *organizationMemberService) LeaveOrganization(
 				DeletedBy:      input.UserID,
 			}
 
-			if err := createOutboxEvent(
+			if err := service.Emit(
 				ctx,
 				q,
 				organizationAggregateType,
@@ -842,7 +826,7 @@ func (s *organizationMemberService) LeaveOrganization(
 					UserID:         input.UserID,
 				}
 
-				if err := createOutboxEvent(
+				if err := service.Emit(
 					ctx,
 					q,
 					organizationMemberAggregateType,
@@ -860,7 +844,7 @@ func (s *organizationMemberService) LeaveOrganization(
 					DeletedBy:      input.UserID,
 				}
 
-				if err := createOutboxEvent(
+				if err := service.Emit(
 					ctx,
 					q,
 					organizationAggregateType,
@@ -875,30 +859,30 @@ func (s *organizationMemberService) LeaveOrganization(
 
 				return nil
 			})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					span.SetStatus(
+						codes.Error,
+						"organization membership or organization not found",
+					)
+
+					return LeaveOrganizationOutput{}, service.ErrNotFound
+				}
+
+				span.RecordError(err)
 				span.SetStatus(
 					codes.Error,
-					"organization membership or organization not found",
+					"leave organization failed",
+				)
+				s.log.ErrorContext(
+					ctx,
+					"leave organization failed",
+					"error",
+					err,
 				)
 
-				return LeaveOrganizationOutput{}, service.ErrNotFound
+				return LeaveOrganizationOutput{}, service.ErrInternal
 			}
-
-			span.RecordError(err)
-			span.SetStatus(
-				codes.Error,
-				"leave organization failed",
-			)
-			s.log.ErrorContext(
-				ctx,
-				"leave organization failed",
-				"error",
-				err,
-			)
-
-			return LeaveOrganizationOutput{}, service.ErrInternal
-		}
 
 			s.revokeMemberAccess(ctx, input.OrganizationID, input.UserID)
 
@@ -929,7 +913,7 @@ func (s *organizationMemberService) LeaveOrganization(
 			UserID:         input.UserID,
 		}
 
-		if err := createOutboxEvent(
+		if err := service.Emit(
 			ctx,
 			q,
 			organizationMemberAggregateType,
@@ -971,33 +955,20 @@ func (s *organizationMemberService) LeaveOrganization(
 	return LeaveOrganizationOutput{}, nil
 }
 
-func createOutboxEvent(ctx context.Context, q repository.Querier, aggregateType string, aggregateID uuid.UUID, eventType string, eventVersion int32, topic string, payload any) error {
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	spanCtx := trace.SpanContextFromContext(ctx)
-	var traceID pgtype.Text
-	if spanCtx.IsValid() {
-		traceID = pgtype.Text{
-			String: spanCtx.TraceID().String(),
-			Valid:  true,
-		}
-	}
-
-	_, err = q.CreateOutboxEvent(
-		ctx,
-		repository.CreateOutboxEventParams{
-			AggregateType: aggregateType,
-			AggregateID:   aggregateID,
-			EventType:     eventType,
-			EventVersion:  eventVersion,
-			Topic:         topic,
-			Payload:       payloadJSON,
-			TraceID:       traceID,
-		},
+func (s *organizationMemberService) revokeMemberAccess(ctx context.Context, organizationID, userID uuid.UUID) {
+	ctx, span := tracer.Start(ctx, "OrganizationMemberService.revokeMemberAccess")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("organization.id", organizationID.String()),
+		attribute.String("user.id", userID.String()),
 	)
-
-	return err
+	if s.revocations == nil {
+		span.AddEvent("revocation writer is nil, skipping")
+		return
+	}
+	if err := s.revocations.RevokeMember(ctx, organizationID.String(), userID.String()); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "write member revocation failed")
+		s.log.ErrorContext(ctx, "write member revocation failed", "error", err, "organization_id", organizationID, "user_id", userID)
+	}
 }
