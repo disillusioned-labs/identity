@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/disillusioned-labs/platform/authkit"
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/handler"
 	authhandler "github.com/disillusioned-labs/identity/internal/handler/auth"
@@ -17,10 +16,13 @@ import (
 	organizationhandler "github.com/disillusioned-labs/identity/internal/handler/organization"
 	"github.com/disillusioned-labs/identity/internal/handler/organization_invitation"
 	organizationmemberhandler "github.com/disillusioned-labs/identity/internal/handler/organization_member"
-	"github.com/disillusioned-labs/platform/cache"
+	serviceaccesshandler "github.com/disillusioned-labs/identity/internal/handler/service_access"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
 	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
+	serviceservice "github.com/disillusioned-labs/identity/internal/service/service_access"
+	"github.com/disillusioned-labs/platform/authkit"
+	"github.com/disillusioned-labs/platform/cache"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -64,6 +66,7 @@ type Deps struct {
 	OrganizationService           organizationservice.OrganizationService
 	OrganizationMemberService     organizationmemberservice.OrganizationMemberService
 	OrganizationInvitationService organizationinvitationservice.OrganizationInvitationService
+	ServiceAccessService          serviceservice.ServiceAccessService
 
 	Verifier      *authkit.Verifier
 	Pool          *pgxpool.Pool
@@ -115,6 +118,26 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 	// platform/telemetry). A scrape endpoint would put route patterns, latency
 	// distributions and pool sizes on an unauthenticated public port.
 
+	authErrorHandler := func(
+		w http.ResponseWriter,
+		_ *http.Request,
+		_ error,
+	) {
+		handler.WriteError(
+			w,
+			http.StatusUnauthorized,
+			handler.CodeUnauthorized,
+			"unauthorized",
+		)
+	}
+
+	authMiddleware := func(next http.Handler) http.Handler {
+		return deps.Verifier.Middleware(
+			next,
+			authErrorHandler,
+		)
+	}
+
 	authHandler := authhandler.NewAuthHandler(
 		deps.AuthService,
 		log,
@@ -137,6 +160,11 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 
 	organizationInvitationHandler := organization_invitation.NewOrganizationInvitationHandler(
 		deps.OrganizationInvitationService,
+		log,
+	)
+
+	serviceAccessHandler := serviceaccesshandler.NewServiceAccessHandler(
+		deps.ServiceAccessService,
 		log,
 	)
 
@@ -165,16 +193,17 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 			authHandler.PublicRoutes(r)
 
 			r.Group(func(r chi.Router) {
-				r.Use(deps.Verifier.Middleware)
+				r.Use(authMiddleware)
 				authHandler.ProtectedRoutes(r)
 			})
 		})
 
 		r.Route("/organizations", func(r chi.Router) {
-			r.Use(deps.Verifier.Middleware)
+			r.Use(authMiddleware)
 			organizationHandler.ProtectedRoutes(r)
 			organizationMemberHandler.ProtectedRoutes(r)
 			organizationInvitationHandler.ProtectedRoutes(r)
+			serviceAccessHandler.ProtectedRoutes(r)
 		})
 
 		organizationInvitationHandler.PublicRoutes(r)

@@ -25,6 +25,7 @@ const (
 )
 
 type OrganizationMemberService interface {
+	GetMember(ctx context.Context, input GetMemberInput) (GetMemberOutput, error)
 	ListOrganizationMembers(ctx context.Context, input ListOrganizationMembersInput) (ListOrganizationMembersOutput, error)
 	UpdateOrganizationMemberRole(ctx context.Context, input UpdateOrganizationMemberRoleInput) (UpdateOrganizationMemberRoleOutput, error)
 	RemoveOrganizationMember(ctx context.Context, input RemoveOrganizationMemberInput) (RemoveOrganizationMemberOutput, error)
@@ -47,6 +48,46 @@ func NewOrganizationMemberService(repo repository.Store, revocations revocationW
 		revocations: revocations,
 		log:         log,
 	}
+}
+
+func (s *organizationMemberService) GetMember(
+	ctx context.Context,
+	input GetMemberInput,
+) (GetMemberOutput, error) {
+	ctx, span := tracer.Start(ctx, "OrganizationMemberService.GetMember")
+	defer span.End()
+
+	member, err := s.repo.GetOrganizationMember(ctx, repository.GetOrganizationMemberParams{
+		OrganizationID: input.OrganizationID,
+		UserID:         input.UserID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "organization member not found")
+			return GetMemberOutput{}, service.ErrNotFound
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get organization member failed")
+		s.log.ErrorContext(ctx, "get organization member failed", "error", err)
+
+		return GetMemberOutput{}, service.ErrInternal
+	}
+
+	span.SetAttributes(
+		attribute.String("organization.id", input.OrganizationID.String()),
+		attribute.String("user.id", input.UserID.String()),
+	)
+
+	return GetMemberOutput{
+		Member: OrganizationMemberOutput{
+			UserID:   member.UserID,
+			Name:     member.Name,
+			Email:    member.Email,
+			Role:     member.Role,
+			JoinedAt: member.JoinedAt,
+		},
+	}, nil
 }
 
 func (s *organizationMemberService) ListOrganizationMembers(

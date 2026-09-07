@@ -27,6 +27,7 @@ type Querier interface {
 	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (GetInvitationByTokenHashRow, error)
 	GetOldestPendingOutboxAgeSeconds(ctx context.Context) (int64, error)
 	GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error)
+	GetOrganizationByID(ctx context.Context, id uuid.UUID) (GetOrganizationByIDRow, error)
 	GetOrganizationInvitation(ctx context.Context, id uuid.UUID) (OrganizationInvitation, error)
 	GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error)
 	GetPendingOrganizationInvitation(ctx context.Context, arg GetPendingOrganizationInvitationParams) (OrganizationInvitation, error)
@@ -35,18 +36,26 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error)
 	GetUserOrganization(ctx context.Context, arg GetUserOrganizationParams) (GetUserOrganizationRow, error)
 	GetUserOrganizationByEmail(ctx context.Context, arg GetUserOrganizationByEmailParams) (GetUserOrganizationByEmailRow, error)
+	GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]GetUsersByIDsRow, error)
+	GetUsersByOrganization(ctx context.Context, arg GetUsersByOrganizationParams) ([]GetUsersByOrganizationRow, error)
+	GrantServiceAccess(ctx context.Context, arg GrantServiceAccessParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
+	IsServiceAccessAllowed(ctx context.Context, arg IsServiceAccessAllowedParams) (bool, error)
 	ListActiveSigningKeys(ctx context.Context) ([]ListActiveSigningKeysRow, error)
 	ListInvitations(ctx context.Context, organizationID uuid.UUID) ([]ListInvitationsRow, error)
 	ListMyPendingOrganizationInvitations(ctx context.Context, lower string) ([]ListMyPendingOrganizationInvitationsRow, error)
 	ListOrganizationMembers(ctx context.Context, organizationID uuid.UUID) ([]ListOrganizationMembersRow, error)
+	ListServiceAccessByOrg(ctx context.Context, organizationID uuid.UUID) ([]OrganizationServiceAccess, error)
+	ListServiceAccessByOrgUser(ctx context.Context, arg ListServiceAccessByOrgUserParams) ([]OrganizationServiceAccess, error)
 	ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error)
 	MarkOutboxEventFailed(ctx context.Context, arg MarkOutboxEventFailedParams) error
 	MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error
 	ReleaseOutboxEventLock(ctx context.Context, id uuid.UUID) error
+	RevokeAllServiceAccess(ctx context.Context, arg RevokeAllServiceAccessParams) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) (int64, error)
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) (int64, error)
+	RevokeServiceAccess(ctx context.Context, arg RevokeServiceAccessParams) (int64, error)
 	RotateSigningKey(ctx context.Context) error
 	SetLastActiveOrganization(ctx context.Context, arg SetLastActiveOrganizationParams) (int64, error)
 	SoftDeleteOrganization(ctx context.Context, id uuid.UUID) (int64, error)

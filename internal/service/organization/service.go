@@ -28,6 +28,7 @@ type OrganizationService interface {
 	ListOrganizations(ctx context.Context, input ListInput) (ListOutput, error)
 	CreateOrganization(ctx context.Context, input CreateInput) (CreateOutput, error)
 	GetOrganization(ctx context.Context, input GetInput) (GetOutput, error)
+	GetOrganizationStatus(ctx context.Context, input GetOrganizationStatusInput) (GetOrganizationStatusOutput, error)
 	UpdateOrganization(ctx context.Context, input UpdateInput) (UpdateOutput, error)
 	DeleteOrganization(ctx context.Context, input DeleteInput) (DeleteOutput, error)
 	Transfer(ctx context.Context, input TransferInput) (TransferOutput, error)
@@ -406,7 +407,7 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 		return DeleteOutput{}, service.ErrInternal
 	}
 
-	span.SetAttributes(attribute.String("organization.type", organizationType),)
+	span.SetAttributes(attribute.String("organization.type", organizationType))
 
 	if replacementID != nil {
 		span.SetAttributes(attribute.String("replacement_organization.id", replacementID.String()))
@@ -544,4 +545,31 @@ func (s *organizationService) Transfer(ctx context.Context, input TransferInput)
 	return output, nil
 }
 
+func (s *organizationService) GetOrganizationStatus(
+	ctx context.Context,
+	input GetOrganizationStatusInput,
+) (GetOrganizationStatusOutput, error) {
+	ctx, span := tracer.Start(ctx, "OrganizationService.GetOrganizationStatus")
+	defer span.End()
 
+	row, err := s.repo.GetOrganizationByID(ctx, input.OrganizationID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			span.SetStatus(codes.Error, "organization not found")
+			return GetOrganizationStatusOutput{}, service.ErrNotFound
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get organization status failed")
+		s.log.ErrorContext(ctx, "get organization status failed", "error", err, "organization_id", input.OrganizationID)
+
+		return GetOrganizationStatusOutput{}, service.ErrInternal
+	}
+
+	span.SetAttributes(attribute.String("organization.id", input.OrganizationID.String()))
+
+	return GetOrganizationStatusOutput{
+		IsFrozen:  false,
+		IsDeleted: row.DeletedAt.Valid,
+	}, nil
+}

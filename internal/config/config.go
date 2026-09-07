@@ -28,17 +28,18 @@ import (
 
 // Config is the root of all application settings, one field per subsystem.
 type Config struct {
-	Service   platformconfig.ServiceConfig     `mapstructure:"service"`
-	Server    platformconfig.ServerConfig      `mapstructure:"server"`
-	Pprof     platformconfig.PprofConfig       `mapstructure:"pprof"`
-	Postgres  platformconfig.PostgresConfig    `mapstructure:"postgres"`
-	Redis     platformconfig.RedisConfig       `mapstructure:"redis"`
-	Cache     platformconfig.CacheConfig       `mapstructure:"cache"`
-	Kafka     platformconfig.KafkaConfig       `mapstructure:"kafka"`
-	OTel      platformconfig.OTelConfig        `mapstructure:"otel"`
-	Log       platformconfig.LogConfig         `mapstructure:"log"`
-	RateLimit platformconfig.RateLimitConfig   `mapstructure:"ratelimit"`
-	Auth      AuthConfig                       `mapstructure:"auth"`
+	Service   platformconfig.ServiceConfig   `mapstructure:"service"`
+	Server    platformconfig.ServerConfig    `mapstructure:"server"`
+	GRPC      platformconfig.GRPCConfig      `mapstructure:"grpc"`
+	Pprof     platformconfig.PprofConfig     `mapstructure:"pprof"`
+	Postgres  platformconfig.PostgresConfig  `mapstructure:"postgres"`
+	Redis     platformconfig.RedisConfig     `mapstructure:"redis"`
+	Cache     platformconfig.CacheConfig     `mapstructure:"cache"`
+	Kafka     platformconfig.KafkaConfig     `mapstructure:"kafka"`
+	OTel      platformconfig.OTelConfig      `mapstructure:"otel"`
+	Log       platformconfig.LogConfig       `mapstructure:"log"`
+	RateLimit platformconfig.RateLimitConfig `mapstructure:"ratelimit"`
+	Auth      AuthConfig                     `mapstructure:"auth"`
 }
 
 // AuthConfig holds JWT signing and refresh token settings.
@@ -131,104 +132,74 @@ func (c *Config) validate() error {
 		errs = append(errs, err)
 	}
 
-	if c.Server.Port < 1 || c.Server.Port > 65535 {
-		fail("server.port must be in 1..65535, got %d", c.Server.Port)
+	if err := platformconfig.ValidateServer(&c.Server); err != nil {
+		errs = append(errs, err)
 	}
-	if c.Pprof.Enabled {
-		if c.Pprof.Port < 1 || c.Pprof.Port > 65535 {
-			fail("pprof.port must be in 1..65535 when pprof.enabled, got %d", c.Pprof.Port)
-		}
-		if c.Pprof.Port == c.Server.Port {
-			fail("pprof.port (%d) must differ from server.port", c.Pprof.Port)
-		}
+
+	if err := platformconfig.ValidatePprof(&c.Pprof); err != nil {
+		errs = append(errs, err)
 	}
-	for _, d := range []struct {
-		key string
-		val time.Duration
-	}{
-		{"server.read_timeout", c.Server.ReadTimeout},
-		{"server.write_timeout", c.Server.WriteTimeout},
-		{"server.idle_timeout", c.Server.IdleTimeout},
-		{"server.shutdown_timeout", c.Server.ShutdownTimeout},
-		{"server.request_timeout", c.Server.RequestTimeout},
-	} {
-		if d.val <= 0 {
-			fail("%s must be > 0, got %s", d.key, d.val)
-		}
+
+	// Cross-config invariants.
+
+	if c.Pprof.Enabled && c.Pprof.Port == c.Server.Port {
+		fail(
+			"pprof.port (%d) must differ from server.port",
+			c.Pprof.Port,
+		)
 	}
-	if c.Server.DrainDelay < 0 {
-		fail("server.drain_delay must not be negative, got %s", c.Server.DrainDelay)
-	}
+
 	// The 504 is written by the handler after the request context expires, so
 	// the write deadline has to outlast the request deadline or the client
 	// gets a dropped connection instead of a status.
 	if c.Server.RequestTimeout >= c.Server.WriteTimeout {
-		fail("server.request_timeout (%s) must be < server.write_timeout (%s)",
-			c.Server.RequestTimeout, c.Server.WriteTimeout)
+		fail(
+			"server.request_timeout (%s) must be < server.write_timeout (%s)",
+			c.Server.RequestTimeout,
+			c.Server.WriteTimeout,
+		)
 	}
+
 	// Shutdown must be able to outlast one in-flight request, or graceful
 	// shutdown truncates responses that were still within their budget.
 	if c.Server.ShutdownTimeout < c.Server.RequestTimeout {
-		fail("server.shutdown_timeout (%s) must be >= server.request_timeout (%s)",
-			c.Server.ShutdownTimeout, c.Server.RequestTimeout)
+		fail(
+			"server.shutdown_timeout (%s) must be >= server.request_timeout (%s)",
+			c.Server.ShutdownTimeout,
+			c.Server.RequestTimeout,
+		)
 	}
 
 	if err := platformconfig.ValidatePostgres(&c.Postgres); err != nil {
 		errs = append(errs, err)
 	}
 
-	// Redis validation.
-	switch c.Redis.Mode {
-	case platformconfig.RedisModeDisabled:
-	case platformconfig.RedisModeOptional, platformconfig.RedisModeRequired:
-		if c.Redis.Addr == "" {
-			fail("redis.addr must be set when redis.mode is %s", c.Redis.Mode)
-		}
-	default:
-		fail("redis.mode must be one of disabled|optional|required, got %q", c.Redis.Mode)
-	}
-	if c.Redis.DB < 0 {
-		fail("redis.db must not be negative, got %d", c.Redis.DB)
-	}
-	if c.Cache.DefaultTTL <= 0 {
-		fail("cache.default_ttl must be > 0, got %s", c.Cache.DefaultTTL)
+	if err := platformconfig.ValidateRedis(&c.Redis); err != nil {
+		errs = append(errs, err)
 	}
 
-	// Kafka validation (common fields via platform).
+	if err := platformconfig.ValidateCache(&c.Cache); err != nil {
+		errs = append(errs, err)
+	}
+
 	if err := platformconfig.ValidateKafka(&c.Kafka); err != nil {
 		errs = append(errs, err)
 	}
 
-	// Identity only uses producer fields; producer-specific validation.
-	if c.Kafka.Producer.RecordRetries < 0 {
-		fail(
-			"kafka.producer.record_retries must be >= 0, got %d",
-			c.Kafka.Producer.RecordRetries,
-		)
-	}
-
-	if c.Kafka.Producer.RecordDeliveryTimeout <= 0 {
-		fail(
-			"kafka.producer.record_delivery_timeout must be > 0, got %s",
-			c.Kafka.Producer.RecordDeliveryTimeout,
-		)
+	if err := platformconfig.ValidateKafkaProducer(&c.Kafka.Producer); err != nil {
+		errs = append(errs, err)
 	}
 
 	if err := platformconfig.ValidateOTel(&c.OTel); err != nil {
 		errs = append(errs, err)
 	}
+
 	if err := platformconfig.ValidateLog(&c.Log); err != nil {
 		errs = append(errs, err)
 	}
 
-	// RateLimit validation.
-	if c.RateLimit.Enabled {
-		if c.RateLimit.Requests <= 0 {
-			fail("ratelimit.requests must be > 0 when ratelimit.enabled, got %d", c.RateLimit.Requests)
-		}
-		if c.RateLimit.Window <= 0 {
-			fail("ratelimit.window must be > 0 when ratelimit.enabled, got %s", c.RateLimit.Window)
-		}
+	if err := platformconfig.ValidateRateLimit(&c.RateLimit); err != nil {
+		errs = append(errs, err)
 	}
 
 	// Auth validation.
@@ -237,17 +208,32 @@ func (c *Config) validate() error {
 	} else {
 		b, err := c.Auth.MasterKeyBytes()
 		if err != nil || len(b) != 32 {
-			fail("auth.master_key must be a 64-character hex string (32 bytes for AES-256)")
+			fail(
+				"auth.master_key must be a 64-character hex string (32 bytes for AES-256)",
+			)
 		}
 	}
+
 	if c.Auth.AccessTokenTTL <= 0 {
-		fail("auth.access_token_ttl must be > 0, got %s", c.Auth.AccessTokenTTL)
+		fail(
+			"auth.access_token_ttl must be > 0, got %s",
+			c.Auth.AccessTokenTTL,
+		)
 	}
+
 	if c.Auth.RefreshTokenTTL <= 0 {
-		fail("auth.refresh_token_ttl must be > 0, got %s", c.Auth.RefreshTokenTTL)
+		fail(
+			"auth.refresh_token_ttl must be > 0, got %s",
+			c.Auth.RefreshTokenTTL,
+		)
 	}
+
 	if c.Auth.Issuer == "" {
 		fail("auth.issuer must not be empty")
+	}
+
+	if err := platformconfig.ValidateGRPC(&c.GRPC); err != nil {
+		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
@@ -267,6 +253,20 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.shutdown_timeout", "20s")
 	v.SetDefault("server.request_timeout", "20s")
 	v.SetDefault("server.drain_delay", "5s")
+
+	v.SetDefault("grpc.server_port", 9090)
+	v.SetDefault("grpc.max_recv_msg_size", 4*1024*1024)
+	v.SetDefault("grpc.max_send_msg_size", 4*1024*1024)
+	v.SetDefault("grpc.max_header_size", 8*1024)
+	v.SetDefault("grpc.unary_timeout", "20s")
+
+	v.SetDefault("grpc.tls.enabled", false)
+	v.SetDefault("grpc.tls.ca_file", "")
+	v.SetDefault("grpc.tls.cert_file", "")
+	v.SetDefault("grpc.tls.key_file", "")
+	v.SetDefault("grpc.tls.server_name", "")
+	v.SetDefault("grpc.tls.mutual_tls", false)
+
 	// Off by default; the port is pre-filled so enabling it needs one variable.
 	v.SetDefault("pprof.enabled", false)
 	v.SetDefault("pprof.port", 6060)

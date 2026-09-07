@@ -6,6 +6,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// Get single member
+type GetMemberInput struct {
+	OrganizationID uuid.UUID
+	UserID         uuid.UUID
+}
+
+type GetMemberOutput struct {
+	Member OrganizationMemberOutput
+}
+
 // List
 type ListOrganizationMembersInput struct {
 	UserID         uuid.UUID

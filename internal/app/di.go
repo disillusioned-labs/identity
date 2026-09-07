@@ -5,14 +5,13 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"log/slog"
-	"net/http"
 
-	"github.com/disillusioned-labs/platform/authkit"
-	"github.com/disillusioned-labs/identity/internal/handler"
-	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
+	"github.com/disillusioned-labs/identity/internal/service/jwks"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
 	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
+	serviceservice "github.com/disillusioned-labs/identity/internal/service/service_access"
+	"github.com/disillusioned-labs/platform/authkit"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
@@ -24,7 +23,7 @@ import (
 )
 
 type jwksKeySource struct {
-	service jwkservice.JwksService
+	service jwks.JwksService
 }
 
 func (s jwksKeySource) Fetch(ctx context.Context) (map[string]*rsa.PublicKey, []byte, error) {
@@ -41,19 +40,9 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 
 	masterKey, err := authCfg.MasterKeyBytes()
 	if err != nil {
-		return server.Deps{}, fmt.Errorf("decode auth master key: %w", err)
-	}
-
-	authErrorHandler := func(
-		w http.ResponseWriter,
-		_ *http.Request,
-		_ error,
-	) {
-		handler.WriteError(
-			w,
-			http.StatusUnauthorized,
-			handler.CodeUnauthorized,
-			"unauthorized",
+		return server.Deps{}, fmt.Errorf(
+			"decode auth master key: %w",
+			err,
 		)
 	}
 
@@ -61,6 +50,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		revocationStore *authservice.RevocationStore
 		verifierOptions []authkit.Option
 	)
+
 	if rdb != nil {
 		revocationStore = authservice.NewRevocationStore(rdb, authCfg.AccessTokenTTL)
 		verifierOptions = append(verifierOptions, authkit.WithDenylist(revocationStore))
@@ -76,7 +66,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		log,
 	)
 
-	jwksService := jwkservice.NewJwksService(
+	jwksService := jwks.NewJwksService(
 		repo,
 		log,
 	)
@@ -97,17 +87,24 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		log,
 	)
 
+	serviceAccessService := serviceservice.NewServiceAccessService(
+		repo,
+		log,
+	)
+
 	verifier := authkit.New(
 		authkit.Config{
 			Issuer: authCfg.Issuer,
 		},
-		append([]authkit.Option{
-			authkit.WithKeySource(jwksKeySource{
-				service: jwksService,
-			}),
-			authkit.WithErrorHandler(authErrorHandler),
-			authkit.WithLogger(log),
-		}, verifierOptions...)...,
+		append(
+			[]authkit.Option{
+				authkit.WithKeySource(jwksKeySource{
+					service: jwksService,
+				}),
+				authkit.WithLogger(log),
+			},
+			verifierOptions...,
+		)...,
 	)
 
 	return server.Deps{
@@ -116,6 +113,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		OrganizationService:           organizationService,
 		OrganizationMemberService:     organizationMemberService,
 		OrganizationInvitationService: organizationInvitationService,
+		ServiceAccessService:          serviceAccessService,
 		Verifier:                      verifier,
 		Pool:                          pool,
 		Redis:                         rdb,

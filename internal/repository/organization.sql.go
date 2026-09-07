@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createOrganization = `-- name: CreateOrganization :one
@@ -67,6 +68,34 @@ func (q *Queries) GetOrganization(ctx context.Context, arg GetOrganizationParams
 	row := q.db.QueryRow(ctx, getOrganization, arg.ID, arg.UserID)
 	var i GetOrganizationRow
 	err := row.Scan(&i.ID, &i.Name, &i.Type)
+	return i, err
+}
+
+const getOrganizationByID = `-- name: GetOrganizationByID :one
+SELECT id,
+       name,
+       type,
+       deleted_at
+FROM organizations
+WHERE id = $1
+`
+
+type GetOrganizationByIDRow struct {
+	ID        uuid.UUID          `json:"id"`
+	Name      string             `json:"name"`
+	Type      string             `json:"type"`
+	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+}
+
+func (q *Queries) GetOrganizationByID(ctx context.Context, id uuid.UUID) (GetOrganizationByIDRow, error) {
+	row := q.db.QueryRow(ctx, getOrganizationByID, id)
+	var i GetOrganizationByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Type,
+		&i.DeletedAt,
+	)
 	return i, err
 }
 

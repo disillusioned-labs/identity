@@ -55,6 +55,20 @@ type MeOrganizationOutput struct {
 	Role string
 }
 
+// GetUsersByIDs
+type UserOrgPair struct {
+	UserID         uuid.UUID
+	OrganizationID uuid.UUID
+}
+
+type GetUsersByIDsInput struct {
+	Users []UserOrgPair
+}
+
+type GetUsersByIDsOutput struct {
+	Users []UserOutput
+}
+
 // Refresh
 type RefreshInput struct {
 	RefreshToken string
@@ -89,9 +103,11 @@ type SwitchOrgOutput struct {
 }
 
 type UserOutput struct {
-	ID    uuid.UUID
-	Name  string
-	Email string
+	ID       uuid.UUID
+	Name     string
+	Email    string
+	Role     string
+	IsActive bool
 }
 
 type OrganizationOutput struct {

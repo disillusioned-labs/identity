@@ -46,3 +46,11 @@ UPDATE organizations
 SET deleted_at = now()
 WHERE id = $1
   AND deleted_at IS NULL;
+
+-- name: GetOrganizationByID :one
+SELECT id,
+       name,
+       type,
+       deleted_at
+FROM organizations
+WHERE id = $1;

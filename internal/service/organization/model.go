@@ -32,6 +32,16 @@ type GetOutput struct {
 	Organization OrganizationOutput
 }
 
+// GetOrganizationStatus
+type GetOrganizationStatusInput struct {
+	OrganizationID uuid.UUID
+}
+
+type GetOrganizationStatusOutput struct {
+	IsFrozen  bool
+	IsDeleted bool
+}
+
 // Update
 type UpdateInput struct {
 	UserID         uuid.UUID

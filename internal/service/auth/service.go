@@ -39,6 +39,7 @@ type AuthService interface {
 	Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error)
 	Logout(ctx context.Context, input LogoutInput) (LogoutOutput, error)
 	SwitchOrg(ctx context.Context, input SwitchOrgInput) (SwitchOrgOutput, error)
+	GetUsersByIDs(ctx context.Context, input GetUsersByIDsInput) (GetUsersByIDsOutput, error)
 }
 
 type authService struct {
@@ -519,7 +520,6 @@ func (s *authService) Refresh(ctx context.Context, input RefreshInput) (RefreshO
 
 		return nil
 	})
-
 	if err != nil {
 		if errors.Is(err, service.ErrUnauthenticated) {
 			return RefreshOutput{}, service.ErrUnauthenticated
@@ -794,3 +794,61 @@ func selectActiveOrganization(memberships []repository.ListUserOrganizationsRow,
 	return memberships[0]
 }
 
+func (s *authService) GetUsersByIDs(
+	ctx context.Context,
+	input GetUsersByIDsInput,
+) (GetUsersByIDsOutput, error) {
+	ctx, span := tracer.Start(ctx, "AuthService.GetUsersByIDs")
+	defer span.End()
+
+	type orgGroup struct {
+		OrgID   uuid.UUID
+		UserIDs []uuid.UUID
+	}
+
+	grouped := make(map[uuid.UUID]*orgGroup)
+	for _, pair := range input.Users {
+		g, ok := grouped[pair.OrganizationID]
+		if !ok {
+			g = &orgGroup{OrgID: pair.OrganizationID}
+			grouped[pair.OrganizationID] = g
+		}
+		g.UserIDs = append(g.UserIDs, pair.UserID)
+	}
+
+	usersByID := make(map[uuid.UUID]UserOutput)
+
+	for _, g := range grouped {
+		rows, err := s.repo.GetUsersByOrganization(ctx, repository.GetUsersByOrganizationParams{
+			OrganizationID: g.OrgID,
+			Column2:        g.UserIDs,
+		})
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "get users by organization failed")
+			s.log.ErrorContext(ctx, "get users by organization failed", "error", err, "organization_id", g.OrgID)
+			return GetUsersByIDsOutput{}, service.ErrInternal
+		}
+
+		for _, row := range rows {
+			usersByID[row.ID] = UserOutput{
+				ID:       row.ID,
+				Name:     row.Name,
+				Email:    row.Email,
+				Role:     row.Role,
+				IsActive: row.IsActive,
+			}
+		}
+	}
+
+	users := make([]UserOutput, 0, len(input.Users))
+	for _, pair := range input.Users {
+		if u, ok := usersByID[pair.UserID]; ok {
+			users = append(users, u)
+		}
+	}
+
+	span.SetAttributes(attribute.Int("user.count", len(users)))
+
+	return GetUsersByIDsOutput{Users: users}, nil
+}
