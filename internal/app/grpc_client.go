@@ -11,7 +11,7 @@ import (
 )
 
 // newExpenseClient creates the gRPC client to expense's internal
-// MemberService surface (decision D2). Returns (client, cleanup, error).
+// ExpenseService surface (decision D2). Returns (client, cleanup, error).
 // Caller must defer cleanup.
 func newExpenseClient(ctx context.Context, cfg *config.Config, log *slog.Logger) (contract.ExpenseClient, func(), error) {
 	opts := []platformgrpc.Option{

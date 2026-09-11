@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/disillusioned-labs/identity/internal/service"
-	memberpb "github.com/disillusioned-labs/platform/contract/member"
+	expensepb "github.com/disillusioned-labs/platform/contract/expense"
 	platformgrpc "github.com/disillusioned-labs/platform/grpc"
 )
 
@@ -22,14 +22,14 @@ var tracer = otel.Tracer("contract/expense")
 // grpcExpenseClient wraps the expense gRPC client with domain types and
 // observability.
 type grpcExpenseClient struct {
-	client memberpb.MemberServiceClient
+	client expensepb.ExpenseServiceClient
 	log    *slog.Logger
 }
 
 // NewGRPCExpenseClient creates an ExpenseClient backed by a gRPC connection.
 func NewGRPCExpenseClient(conn *platformgrpc.Client, log *slog.Logger) ExpenseClient {
 	return &grpcExpenseClient{
-		client: memberpb.NewMemberServiceClient(conn.Conn()),
+		client: expensepb.NewExpenseServiceClient(conn.Conn()),
 		log:    log,
 	}
 }
@@ -43,7 +43,7 @@ func (c *grpcExpenseClient) CheckApproverAssignments(ctx context.Context, orgID,
 		attribute.String("user.id", userID.String()),
 	)
 
-	resp, err := c.client.CheckApproverAssignments(ctx, &memberpb.CheckApproverAssignmentsRequest{
+	resp, err := c.client.CheckApproverAssignments(ctx, &expensepb.CheckApproverAssignmentsRequest{
 		OrganizationId: orgID.String(),
 		UserId:         userID.String(),
 	})
@@ -91,7 +91,7 @@ func (c *grpcExpenseClient) ReassignApproverRules(ctx context.Context, orgID, fr
 		attribute.String("actor.id", actorID.String()),
 	)
 
-	_, err := c.client.ReassignApproverRules(ctx, &memberpb.ReassignApproverRulesRequest{
+	_, err := c.client.ReassignApproverRules(ctx, &expensepb.ReassignApproverRulesRequest{
 		OrganizationId: orgID.String(),
 		FromUserId:     fromUserID.String(),
 		ToUserId:       toUserID.String(),
