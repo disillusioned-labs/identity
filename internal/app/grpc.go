@@ -170,12 +170,22 @@ func RunGRPC(cfg *config.Config) error {
 	// -------------------------------------------------------------------------
 	// Dependencies
 	// -------------------------------------------------------------------------
+	// buildDeps wires the member service, whose removal flow calls expense
+	// over gRPC (decision D2). Unused on this binary's own RPCs but kept
+	// wired so both entry points build the same dependency graph.
+	expenseClient, closeExpense, err := newExpenseClient(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer closeExpense()
+
 	deps, err := buildDeps(
 		pool,
 		rdb,
 		redisRequired,
 		svcCache,
 		cfg.Auth,
+		expenseClient,
 		log,
 	)
 	if err != nil {

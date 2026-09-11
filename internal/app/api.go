@@ -16,8 +16,8 @@ import (
 
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/server"
-	platformconfig "github.com/disillusioned-labs/platform/config"
 	"github.com/disillusioned-labs/platform/cache"
+	platformconfig "github.com/disillusioned-labs/platform/config"
 	"github.com/disillusioned-labs/platform/postgres"
 	"github.com/disillusioned-labs/platform/redis"
 	"github.com/disillusioned-labs/platform/telemetry"
@@ -114,7 +114,15 @@ func RunAPI(cfg *config.Config) error {
 	defer closeRedis()
 	redisRequired := cfg.Redis.Mode == platformconfig.RedisModeRequired
 
-	deps, err := buildDeps(pool, rdb, redisRequired, svcCache, cfg.Auth, log)
+	// The member-removal use case checks expense over gRPC before it
+	// commits (decision D2); the client is owned by the API process.
+	expenseClient, closeExpense, err := newExpenseClient(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer closeExpense()
+
+	deps, err := buildDeps(pool, rdb, redisRequired, svcCache, cfg.Auth, expenseClient, log)
 	if err != nil {
 		return fmt.Errorf("build dependencies: %w", err)
 	}

@@ -16,6 +16,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/disillusioned-labs/identity/internal/config"
+	"github.com/disillusioned-labs/identity/internal/contract"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/server"
 	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
@@ -35,7 +36,7 @@ func (s jwksKeySource) Fetch(ctx context.Context) (map[string]*rsa.PublicKey, []
 	return keys, nil, nil
 }
 
-func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cache cache.Cache, authCfg config.AuthConfig, log *slog.Logger) (server.Deps, error) {
+func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cache cache.Cache, authCfg config.AuthConfig, expenseClient contract.ExpenseClient, log *slog.Logger) (server.Deps, error) {
 	repo := repository.NewStore(pool)
 
 	masterKey, err := authCfg.MasterKeyBytes()
@@ -79,6 +80,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 	organizationMemberService := organizationmemberservice.NewOrganizationMemberService(
 		repo,
 		revocationStore,
+		expenseClient,
 		log,
 	)
 

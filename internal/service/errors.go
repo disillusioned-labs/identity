@@ -42,4 +42,10 @@ var (
 	ErrInvitationAlreadyAccepted = NewError("INVITATION_ALREADY_ACCEPTED", 409, "invitation has already been accepted")
 	ErrInvalidEmail              = NewError("INVALID_EMAIL", 400, "invalid email address")
 	ErrCannotTransferToSelf      = NewError("CANNOT_TRANSFER_TO_SELF", 400, "cannot transfer ownership to yourself")
+
+	// Member removal blocked by expense's approval rules (decision D2). The
+	// response carries the blocking rules under details.rules.
+	ErrApproverStillAssigned = NewError("APPROVER_STILL_ASSIGNED", 409, "member is still an approver on active rules")
+	ErrInvalidReassignTarget = NewError("INVALID_REASSIGN_TARGET", 422, "reassign target must differ from the removed member and be a member of the organization")
+	ErrExpenseServiceDown    = NewError("EXPENSE_SERVICE_DOWN", 503, "approval rule check is unavailable; try again later")
 )

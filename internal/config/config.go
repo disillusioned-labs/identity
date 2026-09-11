@@ -40,6 +40,10 @@ type Config struct {
 	Log       platformconfig.LogConfig       `mapstructure:"log"`
 	RateLimit platformconfig.RateLimitConfig `mapstructure:"ratelimit"`
 	Auth      AuthConfig                     `mapstructure:"auth"`
+	// GRPCClient points at expense's internal gRPC surface (decision D2):
+	// the member-removal use case checks approver assignments there before
+	// committing.
+	GRPCClient platformconfig.GRPCClientConfig `mapstructure:"grpc_client"`
 }
 
 // AuthConfig holds JWT signing and refresh token settings.
@@ -236,6 +240,10 @@ func (c *Config) validate() error {
 		errs = append(errs, err)
 	}
 
+	if err := platformconfig.ValidateGRPCClient(&c.GRPCClient); err != nil {
+		errs = append(errs, err)
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -266,6 +274,21 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("grpc.tls.key_file", "")
 	v.SetDefault("grpc.tls.server_name", "")
 	v.SetDefault("grpc.tls.mutual_tls", false)
+
+	// gRPC client (identity → expense, decision D2). Removal is not a hot
+	// path, so the timeout is generous compared to expense's 50ms budget on
+	// its own identity calls - a member removal must not fail just because
+	// expense had one slow query.
+	v.SetDefault("grpc_client.target", "localhost:9091")
+	v.SetDefault("grpc_client.timeout", "2s")
+	v.SetDefault("grpc_client.max_recv_msg_size", 4194304)
+	v.SetDefault("grpc_client.max_send_msg_size", 4194304)
+	v.SetDefault("grpc_client.tls.enabled", false)
+	v.SetDefault("grpc_client.tls.ca_file", "")
+	v.SetDefault("grpc_client.tls.cert_file", "")
+	v.SetDefault("grpc_client.tls.key_file", "")
+	v.SetDefault("grpc_client.tls.server_name", "")
+	v.SetDefault("grpc_client.tls.mutual_tls", false)
 
 	// Off by default; the port is pre-filled so enabling it needs one variable.
 	v.SetDefault("pprof.enabled", false)

@@ -147,12 +147,25 @@ func (h *OrganizationMemberHandler) removeOrganizationMember(
 		return
 	}
 
+	// Decision D2 combined action: the retry after APPROVER_STILL_ASSIGNED
+	// carries the replacement approver chosen by the admin.
+	var reassignTo *uuid.UUID
+	if v := r.URL.Query().Get("reassign_rules_to"); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid reassign_rules_to")
+			return
+		}
+		reassignTo = &id
+	}
+
 	output, err := h.service.RemoveOrganizationMember(
 		ctx,
 		organizationmemberservice.RemoveOrganizationMemberInput{
-			UserID:         userID,
-			OrganizationID: organizationID,
-			TargetUserID:   targetUserID,
+			UserID:          userID,
+			OrganizationID:  organizationID,
+			TargetUserID:    targetUserID,
+			ReassignRulesTo: reassignTo,
 		},
 	)
 	if err != nil {

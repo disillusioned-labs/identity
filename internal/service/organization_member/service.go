@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
+	"github.com/disillusioned-labs/identity/internal/contract"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
 	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
@@ -39,13 +40,15 @@ type revocationWriter interface {
 type organizationMemberService struct {
 	repo        repository.Store
 	revocations revocationWriter
+	expense     contract.ExpenseClient
 	log         *slog.Logger
 }
 
-func NewOrganizationMemberService(repo repository.Store, revocations revocationWriter, log *slog.Logger) OrganizationMemberService {
+func NewOrganizationMemberService(repo repository.Store, revocations revocationWriter, expense contract.ExpenseClient, log *slog.Logger) OrganizationMemberService {
 	return &organizationMemberService{
 		repo:        repo,
 		revocations: revocations,
+		expense:     expense,
 		log:         log,
 	}
 }
@@ -487,6 +490,51 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 
 				return RemoveOrganizationMemberOutput{}, service.ErrLastOwnerCannotLeave
 			}
+		}
+	}
+
+	// Decision D2: approval rules live in the expense database, so only
+	// expense can answer whether the member is still an active approver -
+	// and the answer must arrive before this removal commits. The check
+	// fails closed: if expense is unreachable, the removal is refused
+	// rather than allowed to leave dangling rules behind.
+	hasRules, rules, err := s.expense.CheckApproverAssignments(ctx, input.OrganizationID, input.TargetUserID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "expense approver check failed")
+		s.log.ErrorContext(ctx, "expense approver check failed", "error", err)
+		return RemoveOrganizationMemberOutput{}, service.ErrExpenseServiceDown
+	}
+	if hasRules {
+		if input.ReassignRulesTo == nil {
+			span.SetStatus(codes.Error, "target member is still an approver")
+			details := make([]map[string]any, 0, len(rules))
+			for _, r := range rules {
+				ref := map[string]any{"id": r.ID, "step": r.Step}
+				if r.ProjectID != nil {
+					ref["project_id"] = *r.ProjectID
+				}
+				details = append(details, ref)
+			}
+			return RemoveOrganizationMemberOutput{}, service.ErrApproverStillAssigned.WithDetails(map[string]any{"rules": details})
+		}
+		if *input.ReassignRulesTo == input.TargetUserID {
+			span.SetStatus(codes.Error, "reassign target equals removed member")
+			return RemoveOrganizationMemberOutput{}, service.ErrInvalidReassignTarget
+		}
+		if err := s.expense.ReassignApproverRules(ctx, input.OrganizationID, input.TargetUserID, *input.ReassignRulesTo, input.UserID); err != nil {
+			span.RecordError(err)
+			var svcErr *service.Error
+			if errors.As(err, &svcErr) {
+				// expense rejected the reassignment for a domain reason
+				// (replacement not a member, already an approver, ...) -
+				// surface it instead of a generic outage.
+				s.log.WarnContext(ctx, "expense rule reassignment rejected", "error", err)
+				return RemoveOrganizationMemberOutput{}, svcErr
+			}
+			span.SetStatus(codes.Error, "expense rule reassignment failed")
+			s.log.ErrorContext(ctx, "expense rule reassignment failed", "error", err)
+			return RemoveOrganizationMemberOutput{}, service.ErrExpenseServiceDown
 		}
 	}
 

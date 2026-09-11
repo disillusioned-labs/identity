@@ -43,6 +43,10 @@ type RemoveOrganizationMemberInput struct {
 	UserID         uuid.UUID
 	OrganizationID uuid.UUID
 	TargetUserID   uuid.UUID
+	// ReassignRulesTo is the replacement approver for expense's approval
+	// rules, chosen by the admin on the combined "remove + reassign" retry
+	// (decision D2). Nil on the first attempt.
+	ReassignRulesTo *uuid.UUID
 }
 
 type RemoveOrganizationMemberOutput struct {
