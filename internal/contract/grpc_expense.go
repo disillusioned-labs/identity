@@ -26,7 +26,6 @@ type grpcExpenseClient struct {
 	log    *slog.Logger
 }
 
-// NewGRPCExpenseClient creates an ExpenseClient backed by a gRPC connection.
 func NewGRPCExpenseClient(conn *platformgrpc.Client, log *slog.Logger) ExpenseClient {
 	return &grpcExpenseClient{
 		client: expensepb.NewExpenseServiceClient(conn.Conn()),

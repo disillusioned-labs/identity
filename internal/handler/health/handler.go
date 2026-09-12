@@ -30,8 +30,6 @@ type Handler struct {
 	draining atomic.Bool
 }
 
-// NewHandler builds the probe handler from required and optional
-// dependencies, keyed by the name reported in the readiness body.
 func NewHandler(required, optional map[string]Pinger) *Handler {
 	return &Handler{required: required, optional: optional}
 }
