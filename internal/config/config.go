@@ -40,10 +40,21 @@ type Config struct {
 	Log       platformconfig.LogConfig       `mapstructure:"log"`
 	RateLimit platformconfig.RateLimitConfig `mapstructure:"ratelimit"`
 	Auth      AuthConfig                     `mapstructure:"auth"`
-	// GRPCClient points at expense's internal gRPC surface (decision D2):
-	// the member-removal use case checks approver assignments there before
-	// committing.
+	// GRPCClient holds the outbound gRPC client knobs shared by every peer.
 	GRPCClient platformconfig.GRPCClientConfig `mapstructure:"grpc_client"`
+	// Expense points at expense's internal gRPC surface (decision D2): the
+	// member-removal use case checks approver assignments there before
+	// committing.
+	Expense ExpenseClientConfig `mapstructure:"expense"`
+}
+
+// ExpenseClientConfig names where expense's gRPC surface lives. Targets are
+// per-dependency keys, kept out of GRPCClientConfig (shared outbound knobs) so
+// the EnvKey-based .env layering names each variable after who it dials.
+type ExpenseClientConfig struct {
+	// GRPCTarget is expense's gRPC address (expense.v1). Must not be empty:
+	// member removal fail-closes on it.
+	GRPCTarget string `mapstructure:"grpc_target"`
 }
 
 // AuthConfig holds JWT signing and refresh token settings.
@@ -243,6 +254,9 @@ func (c *Config) validate() error {
 	if err := platformconfig.ValidateGRPCClient(&c.GRPCClient); err != nil {
 		errs = append(errs, err)
 	}
+	if strings.TrimSpace(c.Expense.GRPCTarget) == "" {
+		fail("expense.grpc_target must not be empty")
+	}
 
 	return errors.Join(errs...)
 }
@@ -279,7 +293,7 @@ func setDefaults(v *viper.Viper) {
 	// path, so the timeout is generous compared to expense's 50ms budget on
 	// its own identity calls - a member removal must not fail just because
 	// expense had one slow query.
-	v.SetDefault("grpc_client.target", "localhost:9091")
+	v.SetDefault("expense.grpc_target", "localhost:9091")
 	v.SetDefault("grpc_client.timeout", "2s")
 	v.SetDefault("grpc_client.max_recv_msg_size", 4194304)
 	v.SetDefault("grpc_client.max_send_msg_size", 4194304)

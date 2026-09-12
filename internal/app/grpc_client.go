@@ -27,11 +27,20 @@ func newExpenseClient(ctx context.Context, cfg *config.Config, log *slog.Logger)
 	}
 
 	if cfg.GRPCClient.TLS.Enabled {
-		// TODO: build *tls.Config from GRPCTLSConfig fields when TLS is enabled.
-		// opts = append(opts, platformgrpc.WithTLS(tlsConfig))
+		tlsConfig, err := platformgrpc.NewTLSConfig(
+			cfg.GRPCClient.TLS.CAFile,
+			cfg.GRPCClient.TLS.CertFile,
+			cfg.GRPCClient.TLS.KeyFile,
+			cfg.GRPCClient.TLS.ServerName,
+			cfg.GRPCClient.TLS.MutualTLS,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build expense gRPC TLS config: %w", err)
+		}
+		opts = append(opts, platformgrpc.WithTLS(tlsConfig))
 	}
 
-	client, err := platformgrpc.NewClient(cfg.GRPCClient.Target, opts...)
+	client, err := platformgrpc.NewClient(cfg.Expense.GRPCTarget, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create expense grpc client: %w", err)
 	}

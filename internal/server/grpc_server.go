@@ -24,7 +24,7 @@ type GRPCServer struct {
 // NewGRPC assembles the gRPC server and Identity service implementation into
 // a ready-to-start GRPCServer.
 func NewGRPC(cfg *config.Config, log *slog.Logger, deps Deps) (*GRPCServer, error) {
-	grpcServer, err := platformgrpc.NewServer(
+	opts := []platformgrpc.Option{
 		platformgrpc.WithMaxRecvMsgSize(cfg.GRPC.MaxRecvMsgSize),
 		platformgrpc.WithMaxSendMsgSize(cfg.GRPC.MaxSendMsgSize),
 		platformgrpc.WithMaxHeaderSize(cfg.GRPC.MaxHeaderSize),
@@ -44,7 +44,22 @@ func NewGRPC(cfg *config.Config, log *slog.Logger, deps Deps) (*GRPCServer, erro
 		// platformgrpc.WithUnaryServerInterceptor(
 		//     authkit.GRPCUnaryInterceptor(deps.Verifier),
 		// ),
-	)
+	}
+	if cfg.GRPC.TLS.Enabled {
+		tlsConfig, err := platformgrpc.NewTLSConfig(
+			cfg.GRPC.TLS.CAFile,
+			cfg.GRPC.TLS.CertFile,
+			cfg.GRPC.TLS.KeyFile,
+			cfg.GRPC.TLS.ServerName,
+			cfg.GRPC.TLS.MutualTLS,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("build grpc server TLS config: %w", err)
+		}
+		opts = append(opts, platformgrpc.WithTLS(tlsConfig))
+	}
+
+	grpcServer, err := platformgrpc.NewServer(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("grpc server: %w", err)
 	}
