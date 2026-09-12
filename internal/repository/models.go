@@ -91,6 +91,7 @@ type SigningKey struct {
 	IsActive            bool               `json:"is_active"`
 	CreatedAt           time.Time          `json:"created_at"`
 	RetiredAt           pgtype.Timestamptz `json:"retired_at"`
+	DeactivatedAt       pgtype.Timestamptz `json:"deactivated_at"`
 }
 
 type User struct {

@@ -27,8 +27,6 @@ LDFLAGS := -s -w \
 	-X github.com/disillusioned-labs/identity/internal/app.commit=$(COMMIT) \
 	-X github.com/disillusioned-labs/identity/internal/app.buildDate=$(BUILD_DATE)
 
-SIGNING_KEY_IMAGE := identity-signing-key:local
-
 run: ## Run the API locally
 	go run ./cmd/api
 
@@ -84,34 +82,13 @@ docker-build: ## Build the production application image
 		-t identity:latest \
 		.
 
-generate-signing-key: ## Generate the initial signing key
-	docker build \
-		--target signing-key \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg COMMIT=$(COMMIT) \
-		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t $(SIGNING_KEY_IMAGE) \
-		.
+# Both targets go through the same script, which picks podman or docker
+# (first available) instead of hardcoding docker. Override with ENGINE=.
+generate-signing-key: ## Generate the initial signing key (podman or docker)
+	./scripts/generate-signing-key.sh
 
-	docker run --rm \
-		--network data \
-		--env-file .env.compose \
-		$(SIGNING_KEY_IMAGE)
-
-rotate-signing-key: ## Rotate the active signing key
-	docker build \
-		--target signing-key \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg COMMIT=$(COMMIT) \
-		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t $(SIGNING_KEY_IMAGE) \
-		.
-
-	docker run --rm \
-		--network data \
-		--env-file .env.compose \
-		$(SIGNING_KEY_IMAGE) \
-		--rotate
+rotate-signing-key: ## Rotate the active signing key (podman or docker)
+	./scripts/generate-signing-key.sh --rotate
 
 
 help: ## Show targets

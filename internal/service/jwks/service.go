@@ -37,18 +37,19 @@ func (s *jwksService) Jwks(ctx context.Context) ([]JwksKeyOutput, error) {
 	ctx, span := tracer.Start(ctx, "JwksService.JwksService")
 	defer span.End()
 
-	listActiveSigningKeys, err := s.repo.ListActiveSigningKeys(ctx)
+	// Published keys include keys awaiting retirement, so tokens signed just
+	// before a rotation keep verifying until they expire.
+	publishedKeys, err := s.repo.ListPublishedSigningKeys(ctx)
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "query list active signing keys failed")
-		s.log.ErrorContext(ctx, "query list active signing keys failed", "error", err)
+		span.SetStatus(codes.Error, "query list published signing keys failed")
+		s.log.ErrorContext(ctx, "query list published signing keys failed", "error", err)
 		return nil, service.ErrInternal
 	}
 
 	var jwksOutput []JwksKeyOutput
 
-	for _, signingKey := range listActiveSigningKeys {
-
+	for _, signingKey := range publishedKeys {
 		jwkKey, err := jwks.PublicKeyToJWKS(signingKey.PublicKey, signingKey.Kid)
 		if err != nil {
 			span.RecordError(err)
@@ -75,14 +76,16 @@ func (s *jwksService) PublicKeys(ctx context.Context) (map[string]*rsa.PublicKey
 	ctx, span := tracer.Start(ctx, "JwksService.PublicKeys")
 	defer span.End()
 
-	signingKeys, err := s.repo.ListActiveSigningKeys(ctx)
+	// Same set as the JWKS endpoint: the key consumers verify with is exactly
+	// the key set identity publishes.
+	signingKeys, err := s.repo.ListPublishedSigningKeys(ctx)
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "query list active signing keys failed")
+		span.SetStatus(codes.Error, "query list published signing keys failed")
 
 		s.log.ErrorContext(
 			ctx,
-			"query list active signing keys failed",
+			"query list published signing keys failed",
 			"error",
 			err,
 		)

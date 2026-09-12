@@ -40,6 +40,7 @@ type Config struct {
 	Log       platformconfig.LogConfig       `mapstructure:"log"`
 	RateLimit platformconfig.RateLimitConfig `mapstructure:"ratelimit"`
 	Auth      AuthConfig                     `mapstructure:"auth"`
+	Signing   SigningConfig                  `mapstructure:"signing"`
 	// GRPCClient holds the outbound gRPC client knobs shared by every peer.
 	GRPCClient platformconfig.GRPCClientConfig `mapstructure:"grpc_client"`
 	// Expense points at expense's internal gRPC surface (decision D2): the
@@ -68,6 +69,21 @@ type AuthConfig struct {
 	RefreshTokenTTL time.Duration `mapstructure:"refresh_token_ttl"`
 	// Issuer is the "iss" claim stamped on every JWT.
 	Issuer string `mapstructure:"issuer"`
+}
+
+// SigningConfig controls the scheduled signing-key lifecycle run by the
+// worker process. Rotation is off by default: a deployment that has not
+// deliberately scheduled it keeps the manual generate-signing-key flow.
+type SigningConfig struct {
+	// RotationEnabled gates the scheduled rotation/retirement worker.
+	RotationEnabled bool `mapstructure:"rotation_enabled"`
+	// RotationInterval is the age at which the active key is replaced.
+	RotationInterval time.Duration `mapstructure:"rotation_interval"`
+	// RetirementDelay is how long a deactivated key stays published in JWKS.
+	// Must be at least the access-token TTL.
+	RetirementDelay time.Duration `mapstructure:"retirement_delay"`
+	// CheckInterval is how often the worker evaluates rotation/retirement.
+	CheckInterval time.Duration `mapstructure:"check_interval"`
 }
 
 // LogValue keeps the master key out of logs.
@@ -245,6 +261,23 @@ func (c *Config) validate() error {
 
 	if c.Auth.Issuer == "" {
 		fail("auth.issuer must not be empty")
+
+		// Signing validation.
+		if c.Signing.RotationInterval <= 0 {
+			fail("signing.rotation_interval must be > 0, got %s", c.Signing.RotationInterval)
+		}
+		if c.Signing.RetirementDelay <= 0 {
+			fail("signing.retirement_delay must be > 0, got %s", c.Signing.RetirementDelay)
+		}
+		if c.Signing.RetirementDelay < c.Auth.AccessTokenTTL {
+			fail(
+				"signing.retirement_delay (%s) must be >= auth.access_token_ttl (%s): tokens signed before a rotation must expire before their key leaves JWKS",
+				c.Signing.RetirementDelay, c.Auth.AccessTokenTTL,
+			)
+		}
+		if c.Signing.CheckInterval <= 0 {
+			fail("signing.check_interval must be > 0, got %s", c.Signing.CheckInterval)
+		}
 	}
 
 	if err := platformconfig.ValidateGRPC(&c.GRPC); err != nil {
@@ -354,4 +387,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.access_token_ttl", "15m")
 	v.SetDefault("auth.refresh_token_ttl", "168h") // 7 days
 	v.SetDefault("auth.issuer", "identity")
+
+	// Scheduled rotation is opt-in; the delays below are safe defaults once
+	// enabled (retirement >= access-token TTL).
+	v.SetDefault("signing.rotation_enabled", false)
+	v.SetDefault("signing.rotation_interval", "720h")
+	v.SetDefault("signing.retirement_delay", "24h")
+	v.SetDefault("signing.check_interval", "1h")
 }

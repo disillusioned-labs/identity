@@ -14,6 +14,7 @@ import (
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service/outbox"
+	"github.com/disillusioned-labs/identity/internal/service/signingkey"
 	"github.com/disillusioned-labs/identity/internal/worker"
 	"github.com/disillusioned-labs/platform/kafka"
 	"github.com/disillusioned-labs/platform/postgres"
@@ -192,12 +193,35 @@ func RunWorker(cfg *config.Config) error {
 	)
 
 	// -------------------------------------------------------------------------
+	// Signing-key rotation (off by default)
+	// -------------------------------------------------------------------------
+	masterKey, err := cfg.Auth.MasterKeyBytes()
+	if err != nil {
+		return fmt.Errorf("decode auth master key: %w", err)
+	}
+
+	signingKeyService := signingkey.NewSigningKeyService(repo, masterKey, log)
+
+	rotationWorker := worker.NewRotationWorker(
+		signingKeyService,
+		log,
+		worker.WithEnabled(cfg.Signing.RotationEnabled),
+		worker.WithRotationInterval(cfg.Signing.RotationInterval),
+		worker.WithRetirementDelay(cfg.Signing.RetirementDelay),
+		worker.WithCheckInterval(cfg.Signing.CheckInterval),
+	)
+
+	// -------------------------------------------------------------------------
 	// Run
 	// -------------------------------------------------------------------------
 	g, runCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
 		return outboxWorker.Run(runCtx)
+	})
+
+	g.Go(func() error {
+		return rotationWorker.Run(runCtx)
 	})
 
 	<-runCtx.Done()

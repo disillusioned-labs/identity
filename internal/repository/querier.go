@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -24,6 +25,7 @@ type Querier interface {
 	DeletePublishedOutboxEvents(ctx context.Context) (int64, error)
 	ExpireInvitation(ctx context.Context, id uuid.UUID) (int64, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
+	GetActiveSigningKeyAge(ctx context.Context) (GetActiveSigningKeyAgeRow, error)
 	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (GetInvitationByTokenHashRow, error)
 	GetOldestPendingOutboxAgeSeconds(ctx context.Context) (int64, error)
 	GetOrganization(ctx context.Context, arg GetOrganizationParams) (GetOrganizationRow, error)
@@ -45,12 +47,17 @@ type Querier interface {
 	ListInvitations(ctx context.Context, organizationID uuid.UUID) ([]ListInvitationsRow, error)
 	ListMyPendingOrganizationInvitations(ctx context.Context, lower string) ([]ListMyPendingOrganizationInvitationsRow, error)
 	ListOrganizationMembers(ctx context.Context, organizationID uuid.UUID) ([]ListOrganizationMembersRow, error)
+	// The JWKS document publishes the signing key AND keys awaiting retirement:
+	// an inactive key with no retired_at was deactivated by a rotation and its
+	// tokens may not have expired yet.
+	ListPublishedSigningKeys(ctx context.Context) ([]ListPublishedSigningKeysRow, error)
 	ListServiceAccessByOrg(ctx context.Context, organizationID uuid.UUID) ([]OrganizationServiceAccess, error)
 	ListServiceAccessByOrgUser(ctx context.Context, arg ListServiceAccessByOrgUserParams) ([]OrganizationServiceAccess, error)
 	ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error)
 	MarkOutboxEventFailed(ctx context.Context, arg MarkOutboxEventFailedParams) error
 	MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error
 	ReleaseOutboxEventLock(ctx context.Context, id uuid.UUID) error
+	RetireExpiredSigningKeys(ctx context.Context, deactivatedAt pgtype.Timestamptz) (int64, error)
 	RevokeAllServiceAccess(ctx context.Context, arg RevokeAllServiceAccessParams) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) (int64, error)
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (int64, error)
