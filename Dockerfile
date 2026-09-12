@@ -35,6 +35,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -X github.com/disillusioned-labs/identity/internal/app.version=${VERSION} \
         -X github.com/disillusioned-labs/identity/internal/app.commit=${COMMIT} \
         -X github.com/disillusioned-labs/identity/internal/app.buildDate=${BUILD_DATE}" \
+      -o /out/grpc ./cmd/grpc && \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags="-s -w \
+        -X github.com/disillusioned-labs/identity/internal/app.version=${VERSION} \
+        -X github.com/disillusioned-labs/identity/internal/app.commit=${COMMIT} \
+        -X github.com/disillusioned-labs/identity/internal/app.buildDate=${BUILD_DATE}" \
       -o /out/generate-signing-key ./cmd/generate-signing-key
 
 
@@ -48,8 +55,10 @@ WORKDIR /app
 
 COPY --from=build /out/api ./api
 COPY --from=build /out/worker ./worker
+COPY --from=build /out/grpc ./grpc
 
 EXPOSE 8080
+EXPOSE 9090
 
 ENTRYPOINT ["/app/api"]
 
