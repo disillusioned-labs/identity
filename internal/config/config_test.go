@@ -414,5 +414,15 @@ func validConfig() *Config {
 			RefreshTokenTTL: 168 * time.Hour,
 			Issuer:          "identity",
 		},
+		GRPCClient: platformconfig.GRPCClientConfig{
+			Timeout: 2 * time.Second, MaxRecvMsgSize: 4194304, MaxSendMsgSize: 4194304,
+		},
+		Expense: ExpenseClientConfig{GRPCTarget: "localhost:9091"},
+		// GRPC is the internal gRPC server surface (identity.v1), validated
+		// unconditionally: a deployment that serves it must have a real port.
+		GRPC: platformconfig.GRPCConfig{
+			ServerPort: 9090, MaxRecvMsgSize: 4194304, MaxSendMsgSize: 4194304,
+			MaxHeaderSize: 8192, UnaryTimeout: 10 * time.Second,
+		},
 	}
 }
