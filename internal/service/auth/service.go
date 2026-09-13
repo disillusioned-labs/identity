@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
@@ -876,6 +877,10 @@ func (s *authService) GetUsersByIDs(
 // the outbox write must not turn a 401 into a 500 (or leak user existence
 // through differential errors), so an emit failure is only logged.
 func (s *authService) emitLoginFailed(ctx context.Context, userID uuid.UUID, reason string, input LoginInput) {
+	// Recorded regardless of the emit below: the metric must not depend on
+	// the outbox being available.
+	loginFailed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+
 	event := LoginFailedEvent{
 		AttemptedEmail: input.Email,
 		UserID:         userID,
