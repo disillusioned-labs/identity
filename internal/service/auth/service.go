@@ -237,6 +237,10 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			span.SetStatus(codes.Error, "invalid credentials")
+			// Best-effort on purpose: propagating an emit failure would turn
+			// unknown-email logins into 500s while known-email ones stay 401,
+			// and the response time difference enumerates users.
+			s.emitLoginFailed(ctx, uuid.Nil, "unknown_email", input)
 			return LoginOutput{}, service.ErrUnauthenticated
 		}
 
@@ -248,6 +252,7 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
 		span.SetStatus(codes.Error, "invalid credentials")
+		s.emitLoginFailed(ctx, user.ID, "invalid_password", input)
 		return LoginOutput{}, service.ErrUnauthenticated
 	}
 
@@ -676,10 +681,24 @@ func (s *authService) SwitchOrg(ctx context.Context, input SwitchOrgInput) (Swit
 			return err
 		}
 
-		return nil
+		err = service.Emit(ctx, querier, authAggregateType, input.UserID,
+			EventOrgSwitched,
+			authEventVersion,
+			constant.TopicAudit,
+			OrgSwitchedEvent{
+				UserID:         input.UserID,
+				OrganizationID: membership.OrganizationID,
+				UserAgent:      input.UserAgent,
+				IPAddress:      input.IPAddress,
+			},
+		)
+		return err
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrForbidden) {
+			// A failed access decision still leaves a trace (ASVS 7.2.2);
+			// best-effort because the transaction above already rolled back.
+			s.emitOrgSwitchFailed(ctx, input, "not_a_member")
 			return SwitchOrgOutput{}, service.ErrForbidden
 		}
 
@@ -851,4 +870,39 @@ func (s *authService) GetUsersByIDs(
 	span.SetAttributes(attribute.Int("user.count", len(users)))
 
 	return GetUsersByIDsOutput{Users: users}, nil
+}
+
+// emitLoginFailed records a failed authentication decision. Best-effort:
+// the outbox write must not turn a 401 into a 500 (or leak user existence
+// through differential errors), so an emit failure is only logged.
+func (s *authService) emitLoginFailed(ctx context.Context, userID uuid.UUID, reason string, input LoginInput) {
+	event := LoginFailedEvent{
+		AttemptedEmail: input.Email,
+		UserID:         userID,
+		Reason:         reason,
+		UserAgent:      input.UserAgent,
+		IPAddress:      input.IPAddress,
+	}
+	if err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		return service.Emit(ctx, q, authAggregateType, userID,
+			EventLoginFailed, authEventVersion, constant.TopicAudit, event)
+	}); err != nil {
+		s.log.ErrorContext(ctx, "emit login_failed failed", "error", err, "reason", reason)
+	}
+}
+
+func (s *authService) emitOrgSwitchFailed(ctx context.Context, input SwitchOrgInput, reason string) {
+	event := OrgSwitchFailedEvent{
+		UserID:         input.UserID,
+		OrganizationID: input.OrganizationID,
+		Reason:         reason,
+		UserAgent:      input.UserAgent,
+		IPAddress:      input.IPAddress,
+	}
+	if err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		return service.Emit(ctx, q, authAggregateType, input.UserID,
+			EventOrgSwitchFailed, authEventVersion, constant.TopicAudit, event)
+	}); err != nil {
+		s.log.ErrorContext(ctx, "emit org_switch_failed failed", "error", err, "reason", reason)
+	}
 }

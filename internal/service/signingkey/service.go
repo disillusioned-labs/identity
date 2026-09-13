@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/disillusioned-labs/identity/internal/constant"
 	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
 	"github.com/disillusioned-labs/platform/crypto"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -114,13 +116,29 @@ func (s *signingKeyService) rotate(ctx context.Context) error {
 			return fmt.Errorf("deactivate current key: %w", err)
 		}
 
-		return q.InsertSigningKey(ctx, repository.InsertSigningKeyParams{
+		if err := q.InsertSigningKey(ctx, repository.InsertSigningKeyParams{
 			Kid:                 kid,
 			PrivateKeyEncrypted: encrypted,
 			PublicKey:           string(pubPEM),
 			Algorithm:           "RS256",
 			IsActive:            true,
-		})
+		}); err != nil {
+			return err
+		}
+
+		// A new signing key changes what the platform will trust - a
+		// security-configuration change (PCI 10.2), audited with the key id
+		// only; the material itself never enters the event.
+		kidUUID, parseErr := uuid.Parse(kid)
+		if parseErr != nil {
+			return fmt.Errorf("parse kid: %w", parseErr)
+		}
+		return service.Emit(ctx, q, "signing_key", kidUUID,
+			EventKeyRotated, eventVersion, constant.TopicAudit, KeyRotatedEvent{
+				Kid:       kid,
+				Algorithm: "RS256",
+				Actor:     "system:rotation-worker",
+			})
 	})
 	if err != nil {
 		return fmt.Errorf("insert signing key: %w", err)
@@ -159,4 +177,15 @@ func (s *signingKeyService) RetireExpired(
 	}
 
 	return retired, nil
+}
+
+const (
+	eventVersion    = 1
+	EventKeyRotated = "signingkey.rotated"
+)
+
+type KeyRotatedEvent struct {
+	Kid       string `json:"kid"`
+	Algorithm string `json:"algorithm"`
+	Actor     string `json:"actor"`
 }

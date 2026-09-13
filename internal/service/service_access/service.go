@@ -2,6 +2,7 @@ package service_access
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
@@ -51,11 +52,22 @@ func (s *serviceAccessService) GrantAccess(ctx context.Context, input GrantAcces
 		return service.ErrForbidden
 	}
 
-	if err := s.repo.GrantServiceAccess(ctx, repository.GrantServiceAccessParams{
-		OrganizationID: input.OrganizationID,
-		UserID:         input.UserID,
-		ServiceName:    input.ServiceName,
-		GrantedBy:      input.GrantedBy,
+	if err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := q.GrantServiceAccess(ctx, repository.GrantServiceAccessParams{
+			OrganizationID: input.OrganizationID,
+			UserID:         input.UserID,
+			ServiceName:    input.ServiceName,
+			GrantedBy:      input.GrantedBy,
+		}); err != nil {
+			return err
+		}
+		return service.Emit(ctx, q, "service_access", input.UserID,
+			EventAccessGranted, eventVersion, constant.TopicAudit, AccessGrantedEvent{
+				OrganizationID: input.OrganizationID,
+				UserID:         input.UserID,
+				ServiceName:    input.ServiceName,
+				ActorID:        input.GrantedBy,
+			})
 	}); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "grant service access failed")
@@ -70,19 +82,33 @@ func (s *serviceAccessService) RevokeAccess(ctx context.Context, input RevokeAcc
 	ctx, span := tracer.Start(ctx, "ServiceAccessService.RevokeAccess")
 	defer span.End()
 
-	rows, err := s.repo.RevokeServiceAccess(ctx, repository.RevokeServiceAccessParams{
-		OrganizationID: input.OrganizationID,
-		UserID:         input.UserID,
-		ServiceName:    input.ServiceName,
+	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		rows, err := q.RevokeServiceAccess(ctx, repository.RevokeServiceAccessParams{
+			OrganizationID: input.OrganizationID,
+			UserID:         input.UserID,
+			ServiceName:    input.ServiceName,
+		})
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return service.ErrNotFound
+		}
+		return service.Emit(ctx, q, "service_access", input.UserID,
+			EventAccessRevoked, eventVersion, constant.TopicAudit, AccessRevokedEvent{
+				OrganizationID: input.OrganizationID,
+				UserID:         input.UserID,
+				ServiceName:    input.ServiceName,
+			})
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return service.ErrNotFound
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "revoke service access failed")
 		s.log.ErrorContext(ctx, "revoke service access failed", "error", err)
 		return service.ErrInternal
-	}
-	if rows == 0 {
-		return service.ErrNotFound
 	}
 	return nil
 }
@@ -91,9 +117,18 @@ func (s *serviceAccessService) RevokeAllAccess(ctx context.Context, input Revoke
 	ctx, span := tracer.Start(ctx, "ServiceAccessService.RevokeAllAccess")
 	defer span.End()
 
-	if err := s.repo.RevokeAllServiceAccess(ctx, repository.RevokeAllServiceAccessParams{
-		OrganizationID: input.OrganizationID,
-		UserID:         input.UserID,
+	if err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := q.RevokeAllServiceAccess(ctx, repository.RevokeAllServiceAccessParams{
+			OrganizationID: input.OrganizationID,
+			UserID:         input.UserID,
+		}); err != nil {
+			return err
+		}
+		return service.Emit(ctx, q, "service_access", input.UserID,
+			EventAccessRevokedAll, eventVersion, constant.TopicAudit, AccessRevokedAllEvent{
+				OrganizationID: input.OrganizationID,
+				UserID:         input.UserID,
+			})
 	}); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "revoke all service access failed")
