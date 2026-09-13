@@ -11,12 +11,14 @@ import (
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/handler"
 	authhandler "github.com/disillusioned-labs/identity/internal/handler/auth"
+	devicehandler "github.com/disillusioned-labs/identity/internal/handler/device"
 	"github.com/disillusioned-labs/identity/internal/handler/health"
 	jwkshandler "github.com/disillusioned-labs/identity/internal/handler/jwks"
 	organizationhandler "github.com/disillusioned-labs/identity/internal/handler/organization"
 	"github.com/disillusioned-labs/identity/internal/handler/organization_invitation"
 	organizationmemberhandler "github.com/disillusioned-labs/identity/internal/handler/organization_member"
 	serviceaccesshandler "github.com/disillusioned-labs/identity/internal/handler/service_access"
+	deviceservice "github.com/disillusioned-labs/identity/internal/service/device"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
 	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
@@ -67,6 +69,7 @@ type Deps struct {
 	OrganizationMemberService     organizationmemberservice.OrganizationMemberService
 	OrganizationInvitationService organizationinvitationservice.OrganizationInvitationService
 	ServiceAccessService          serviceservice.ServiceAccessService
+	DeviceService                 deviceservice.DeviceService
 
 	Verifier      *authkit.Verifier
 	Pool          *pgxpool.Pool
@@ -168,6 +171,11 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 		log,
 	)
 
+	deviceHandler := devicehandler.NewDeviceHandler(
+		deps.DeviceService,
+		log,
+	)
+
 	r.Route("/", func(r chi.Router) {
 		jwksHandler.Routes(r)
 	})
@@ -207,6 +215,13 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 		})
 
 		organizationInvitationHandler.PublicRoutes(r)
+
+		// Devices are user-scoped, not organization-scoped: one flat protected
+		// group, same middleware chain as the /organizations subtree.
+		r.Group(func(r chi.Router) {
+			r.Use(authMiddleware)
+			deviceHandler.ProtectedRoutes(r)
+		})
 	})
 
 	// otelhttp wraps the whole router: creates the server span, extracts

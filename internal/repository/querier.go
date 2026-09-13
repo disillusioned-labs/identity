@@ -43,6 +43,7 @@ type Querier interface {
 	GrantServiceAccess(ctx context.Context, arg GrantServiceAccessParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	IsServiceAccessAllowed(ctx context.Context, arg IsServiceAccessAllowedParams) (bool, error)
+	ListActiveDeviceTokens(ctx context.Context, userID uuid.UUID) ([]string, error)
 	ListActiveSigningKeys(ctx context.Context) ([]ListActiveSigningKeysRow, error)
 	ListInvitations(ctx context.Context, organizationID uuid.UUID) ([]ListInvitationsRow, error)
 	ListMyPendingOrganizationInvitations(ctx context.Context, lower string) ([]ListMyPendingOrganizationInvitationsRow, error)
@@ -63,12 +64,20 @@ type Querier interface {
 	RevokeInvitation(ctx context.Context, arg RevokeInvitationParams) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) (int64, error)
 	RevokeServiceAccess(ctx context.Context, arg RevokeServiceAccessParams) (int64, error)
+	// Only the token's owner may revoke it; user_id comes from the JWT claims.
+	// No row returned = the token was never registered by this user (or is
+	// already revoked) and maps to ErrNotFound.
+	RevokeUserDevice(ctx context.Context, arg RevokeUserDeviceParams) (RevokeUserDeviceRow, error)
 	RotateSigningKey(ctx context.Context) error
 	SetLastActiveOrganization(ctx context.Context, arg SetLastActiveOrganizationParams) (int64, error)
 	SoftDeleteOrganization(ctx context.Context, id uuid.UUID) (int64, error)
 	SoftDeleteOrganizationMember(ctx context.Context, arg SoftDeleteOrganizationMemberParams) (int64, error)
 	UpdateOrganization(ctx context.Context, arg UpdateOrganizationParams) (UpdateOrganizationRow, error)
 	UpdateOrganizationMemberRole(ctx context.Context, arg UpdateOrganizationMemberRoleParams) (int64, error)
+	// Re-registering an active token refreshes its platform/app metadata; a token
+	// that was revoked keeps its old row (the partial index only conflicts on
+	// active rows) and gets a fresh row instead.
+	UpsertUserDevice(ctx context.Context, arg UpsertUserDeviceParams) (UpsertUserDeviceRow, error)
 	UserExistsByEmail(ctx context.Context, lower string) (bool, error)
 }
 

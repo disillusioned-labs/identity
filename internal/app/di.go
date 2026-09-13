@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	deviceservice "github.com/disillusioned-labs/identity/internal/service/device"
 	"github.com/disillusioned-labs/identity/internal/service/jwks"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
 	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
@@ -94,6 +95,11 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		log,
 	)
 
+	deviceService := deviceservice.NewDeviceService(
+		repo,
+		log,
+	)
+
 	verifier := authkit.New(
 		authkit.Config{
 			Issuer: authCfg.Issuer,
@@ -116,6 +122,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		OrganizationMemberService:     organizationMemberService,
 		OrganizationInvitationService: organizationInvitationService,
 		ServiceAccessService:          serviceAccessService,
+		DeviceService:                 deviceService,
 		Verifier:                      verifier,
 		Pool:                          pool,
 		Redis:                         rdb,

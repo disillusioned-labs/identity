@@ -69,6 +69,7 @@ func NewGRPC(cfg *config.Config, log *slog.Logger, deps Deps) (*GRPCServer, erro
 		deps.OrganizationService,
 		deps.OrganizationMemberService,
 		deps.ServiceAccessService,
+		deps.DeviceService,
 		log,
 	)
 

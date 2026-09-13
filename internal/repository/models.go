@@ -104,3 +104,14 @@ type User struct {
 	UpdatedAt                time.Time          `json:"updated_at"`
 	DeletedAt                pgtype.Timestamptz `json:"deleted_at"`
 }
+
+type UserDevice struct {
+	ID         uuid.UUID          `json:"id"`
+	UserID     uuid.UUID          `json:"user_id"`
+	Token      string             `json:"token"`
+	Platform   string             `json:"platform"`
+	AppVersion pgtype.Text        `json:"app_version"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+}

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
+	deviceservice "github.com/disillusioned-labs/identity/internal/service/device"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
 	serviceservice "github.com/disillusioned-labs/identity/internal/service/service_access"
@@ -29,6 +30,7 @@ type IdentityServer struct {
 	organizationService       organizationservice.OrganizationService
 	organizationMemberService organizationmemberservice.OrganizationMemberService
 	serviceAccessService      serviceservice.ServiceAccessService
+	deviceService             deviceservice.DeviceService
 	log                       *slog.Logger
 }
 
@@ -37,6 +39,7 @@ func NewIdentityServer(
 	organizationService organizationservice.OrganizationService,
 	organizationMemberService organizationmemberservice.OrganizationMemberService,
 	serviceAccessService serviceservice.ServiceAccessService,
+	deviceService deviceservice.DeviceService,
 	log *slog.Logger,
 ) *IdentityServer {
 	return &IdentityServer{
@@ -44,6 +47,7 @@ func NewIdentityServer(
 		organizationService:       organizationService,
 		organizationMemberService: organizationMemberService,
 		serviceAccessService:      serviceAccessService,
+		deviceService:             deviceService,
 		log:                       log,
 	}
 }
@@ -250,6 +254,38 @@ func (s *IdentityServer) IsServiceAccessAllowed(
 
 	return &identitypb.IsServiceAccessAllowedResponse{
 		Allowed: allowed,
+	}, nil
+}
+
+// GetDeviceTokens returns the push tokens of a user's active devices, for the
+// notification service to fan a push delivery out per device. Tokens are
+// secrets: they only ever travel over this internal RPC, never logs.
+func (s *IdentityServer) GetDeviceTokens(
+	ctx context.Context,
+	req *identitypb.GetDeviceTokensRequest,
+) (*identitypb.GetDeviceTokensResponse, error) {
+	ctx, span := tracer.Start(ctx, "IdentityServer.GetDeviceTokens")
+	defer span.End()
+
+	userID, err := uuid.Parse(req.GetUserId())
+	if err != nil {
+		span.SetStatus(otelcodes.Error, "invalid user_id")
+		return nil, status.Error(codes.InvalidArgument, "invalid user_id")
+	}
+
+	tokens, err := s.deviceService.ListActiveTokens(ctx, userID)
+	if err != nil {
+		return nil, writeServiceErr(ctx, span, s.log, err, "list device tokens failed",
+			"user_id", userID)
+	}
+
+	span.SetAttributes(
+		attribute.String("user.id", userID.String()),
+		attribute.Int("device.count", len(tokens)),
+	)
+
+	return &identitypb.GetDeviceTokensResponse{
+		Tokens: tokens,
 	}, nil
 }
 
