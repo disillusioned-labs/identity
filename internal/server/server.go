@@ -25,6 +25,7 @@ import (
 	serviceservice "github.com/disillusioned-labs/identity/internal/service/service_access"
 	"github.com/disillusioned-labs/platform/authkit"
 	"github.com/disillusioned-labs/platform/cache"
+	"github.com/disillusioned-labs/platform/httpserver"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -39,8 +40,7 @@ import (
 
 // Server wraps the http.Server with the assembled router and logger.
 type Server struct {
-	http   *http.Server
-	log    *slog.Logger
+	http   *httpserver.Server
 	health *health.Handler
 }
 
@@ -80,7 +80,7 @@ type Deps struct {
 
 // New assembles the router - middleware chain, probes, /metrics, and every
 // /api/v1 resource - into a ready-to-start Server.
-func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
+func New(cfg *config.Config, log *slog.Logger, deps Deps) (*Server, error) {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -232,17 +232,22 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) *Server {
 		otelhttp.WithFilter(func(r *http.Request) bool { return !isProbe(r.URL.Path) }),
 	)
 
-	return &Server{
-		http: &http.Server{
-			Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-			Handler:      root,
-			ReadTimeout:  cfg.Server.ReadTimeout,
-			WriteTimeout: cfg.Server.WriteTimeout,
-			IdleTimeout:  cfg.Server.IdleTimeout,
-		},
-		log:    log,
-		health: healthHandler,
+	httpServer, err := httpserver.New(
+		root,
+		httpserver.WithAddress(fmt.Sprintf(":%d", cfg.Server.Port)),
+		httpserver.WithReadTimeout(cfg.Server.ReadTimeout),
+		httpserver.WithWriteTimeout(cfg.Server.WriteTimeout),
+		httpserver.WithIdleTimeout(cfg.Server.IdleTimeout),
+		httpserver.WithLogger(log),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build HTTP server: %w", err)
 	}
+
+	return &Server{
+		http:   httpServer,
+		health: healthHandler,
+	}, nil
 }
 
 // BeginDrain flips /readyz to 503 while continuing to serve traffic, so an
@@ -251,15 +256,10 @@ func (s *Server) BeginDrain() { s.health.BeginDrain() }
 
 // Start blocks until the listener fails or Shutdown is called.
 func (s *Server) Start() error {
-	s.log.Info("http server listening", "addr", s.http.Addr)
-	if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("http server: %w", err)
-	}
-	return nil
+	return s.http.Start()
 }
 
 // Shutdown drains in-flight requests until ctx expires, then closes.
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.log.Info("shutting down http server")
 	return s.http.Shutdown(ctx)
 }

@@ -31,16 +31,26 @@ type stubAuthService struct{ authservice.AuthService }
 // second request is throttled.
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
-	return newTestServerWith(t).http.Handler
+	return newTestServerWith(t).http.Handler()
 }
 
 func newTestServerWith(t *testing.T) *Server {
 	t.Helper()
 	cfg := &config.Config{
+		Server: platformconfig.ServerConfig{
+			Port:         8080,
+			ReadTimeout:  time.Second,
+			WriteTimeout: time.Second,
+			IdleTimeout:  time.Second,
+		},
 		Redis:     platformconfig.RedisConfig{Mode: platformconfig.RedisModeDisabled},
 		RateLimit: platformconfig.RateLimitConfig{Enabled: true, Requests: 1, Window: time.Second},
 	}
-	return New(cfg, slog.New(slog.DiscardHandler), Deps{AuthService: stubAuthService{}})
+	server, err := New(cfg, slog.New(slog.DiscardHandler), Deps{AuthService: stubAuthService{}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return server
 }
 
 func TestRateLimitEnvelope(t *testing.T) {
@@ -243,7 +253,7 @@ func TestPprofServerDisabledReturnsNil(t *testing.T) {
 // failure tells the orchestrator to kill the process mid-drain.
 func TestBeginDrainFailsReadinessButNotLiveness(t *testing.T) {
 	srv := newTestServerWith(t)
-	h := srv.http.Handler
+	h := srv.http.Handler()
 
 	srv.BeginDrain()
 
