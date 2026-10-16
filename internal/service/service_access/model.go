@@ -17,6 +17,7 @@ type RevokeAccessInput struct {
 	OrganizationID uuid.UUID
 	UserID         uuid.UUID
 	ServiceName    string
+	RevokedBy      uuid.UUID
 }
 
 type RevokeAllAccessInput struct {
@@ -27,10 +28,12 @@ type RevokeAllAccessInput struct {
 type ListAccessByOrgUserInput struct {
 	OrganizationID uuid.UUID
 	UserID         uuid.UUID
+	RequestedBy    uuid.UUID
 }
 
 type ListAccessByOrgInput struct {
 	OrganizationID uuid.UUID
+	RequestedBy    uuid.UUID
 }
 
 type ServiceAccessOutput struct {

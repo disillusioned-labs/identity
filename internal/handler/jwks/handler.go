@@ -4,10 +4,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/disillusioned-labs/identity/internal/handler"
-	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/disillusioned-labs/identity/internal/handler"
+	jwkservice "github.com/disillusioned-labs/identity/internal/service/jwks"
 )
 
 var tracer = otel.Tracer("handler/jwks")

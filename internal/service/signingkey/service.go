@@ -11,15 +11,16 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/disillusioned-labs/identity/internal/constant"
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/identity/internal/service"
-	"github.com/disillusioned-labs/platform/crypto"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+
+	"github.com/disillusioned-labs/identity/internal/constant"
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
+	"github.com/disillusioned-labs/platform/crypto"
 )
 
 var tracer = otel.Tracer("service/signingkey")

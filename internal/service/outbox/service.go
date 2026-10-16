@@ -7,12 +7,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/platform/kafka"
 	"github.com/jackc/pgx/v5/pgtype"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/platform/kafka"
 )
 
 var tracer = otel.Tracer("service/outbox")
@@ -93,7 +94,7 @@ func (s *outboxService) PublishPending(
 		attribute.Int("outbox.batch_size", batchSize),
 	)
 
-	span.SetAttributes(attribute.Int("outbox.events_claimed", len(events)),)
+	span.SetAttributes(attribute.Int("outbox.events_claimed", len(events)))
 
 	for _, event := range events {
 		if err := s.publishEvent(ctx, event); err != nil {

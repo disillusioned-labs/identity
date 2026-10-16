@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
+
 	deviceservice "github.com/disillusioned-labs/identity/internal/service/device"
 	"github.com/disillusioned-labs/identity/internal/service/jwks"
 	organizationservice "github.com/disillusioned-labs/identity/internal/service/organization"
@@ -13,8 +16,6 @@ import (
 	organizationmemberservice "github.com/disillusioned-labs/identity/internal/service/organization_member"
 	serviceservice "github.com/disillusioned-labs/identity/internal/service/service_access"
 	"github.com/disillusioned-labs/platform/authkit"
-	"github.com/jackc/pgx/v5/pgxpool"
-	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/contract"
@@ -64,6 +65,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 		authCfg.AccessTokenTTL,
 		authCfg.RefreshTokenTTL,
 		authCfg.Issuer,
+		authCfg.RecoveryURL,
 		revocationStore,
 		log,
 	)
@@ -87,6 +89,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 
 	organizationInvitationService := organizationinvitationservice.NewOrganizationInvitationService(
 		repo,
+		authCfg.InvitationURL,
 		log,
 	)
 

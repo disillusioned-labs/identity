@@ -3,8 +3,9 @@ package organization_invitation
 import (
 	"time"
 
-	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 	"github.com/google/uuid"
+
+	organizationinvitationservice "github.com/disillusioned-labs/identity/internal/service/organization_invitation"
 )
 
 type ListMyInvitationsResponse struct {
@@ -137,6 +138,6 @@ func toAcceptInvitationResponse(input organizationinvitationservice.AcceptInvita
 
 type RevokeInvitationResponse struct{}
 
-func toRevokeInvitationResponse(input organizationinvitationservice.RevokeInvitationOutput) RevokeInvitationResponse {
+func toRevokeInvitationResponse(_ organizationinvitationservice.RevokeInvitationOutput) RevokeInvitationResponse {
 	return RevokeInvitationResponse{}
 }

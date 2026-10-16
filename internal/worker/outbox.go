@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/disillusioned-labs/identity/internal/service/outbox"
 	"github.com/google/uuid"
+
+	"github.com/disillusioned-labs/identity/internal/service/outbox"
 )
 
 const (

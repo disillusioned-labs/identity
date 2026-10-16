@@ -123,6 +123,53 @@ func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
 	handler.OK(w, http.StatusOK, toLogoutResponse(output))
 }
 
+func (h *AuthHandler) requestPasswordRecovery(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.requestPasswordRecovery")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	req, ok := handler.DecodeValid[PasswordRecoveryRequest](w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "decode/validate failed")
+		return
+	}
+
+	if _, err := h.service.RequestPasswordRecovery(ctx, authservice.RequestPasswordRecoveryInput{
+		Email: strings.TrimSpace(req.Email),
+	}); err != nil {
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+
+	handler.OK(w, http.StatusAccepted, map[string]string{
+		"message": "If an account matches this email, recovery instructions will arrive shortly.",
+	})
+}
+
+func (h *AuthHandler) resetPassword(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "AuthHandler.resetPassword")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	req, ok := handler.DecodeValid[PasswordResetRequest](w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "decode/validate failed")
+		return
+	}
+
+	if _, err := h.service.ResetPassword(ctx, authservice.ResetPasswordInput{
+		Token:    strings.TrimSpace(req.Token),
+		Password: req.Password,
+	}); err != nil {
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+
+	handler.OK(w, http.StatusOK, map[string]string{
+		"message": "Password updated. Sign in with your new password.",
+	})
+}
+
 func (h *AuthHandler) switchOrg(w http.ResponseWriter, r *http.Request) {
 	ctx, span := tracer.Start(r.Context(), "AuthHandler.switchOrg")
 	defer span.End()
@@ -194,7 +241,7 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userId, err := uuid.Parse(claims.Subject)
+	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
 		span.SetStatus(codes.Error, "invalid claim subject")
 		handler.WriteError(
@@ -207,7 +254,7 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meInput := authservice.MeInput{
-		UserID: userId,
+		UserID: userID,
 	}
 
 	meOutput, err := h.service.Me(ctx, meInput)

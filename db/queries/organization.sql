@@ -51,6 +51,27 @@ WHERE id = $1
 SELECT id,
        name,
        type,
-       deleted_at
+       deleted_at,
+       frozen_at
 FROM organizations
 WHERE id = $1;
+
+-- name: GetOrganizationStatusForUpdate :one
+SELECT deleted_at,
+       frozen_at
+FROM organizations
+WHERE id = $1
+FOR UPDATE;
+
+-- name: GetOrganizationStatusForShare :one
+SELECT deleted_at,
+       frozen_at
+FROM organizations
+WHERE id = $1
+FOR SHARE;
+
+-- name: SetOrganizationFrozen :execrows
+UPDATE organizations
+SET frozen_at = CASE WHEN sqlc.arg(is_frozen)::boolean THEN COALESCE(frozen_at, now()) ELSE NULL END
+WHERE id = $1
+  AND deleted_at IS NULL;

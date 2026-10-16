@@ -5,11 +5,12 @@ import (
 	"crypto/rsa"
 	"log/slog"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
 	"github.com/disillusioned-labs/platform/jwks"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
 )
 
 var tracer = otel.Tracer("service/jwks")
@@ -26,7 +27,8 @@ type jwksService struct {
 
 func NewJwksService(
 	repo repository.Store,
-	log *slog.Logger) JwksService {
+	log *slog.Logger,
+) JwksService {
 	return &jwksService{
 		repo: repo,
 		log:  log,

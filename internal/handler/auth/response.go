@@ -1,8 +1,9 @@
 package auth
 
 import (
-	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
 	"github.com/google/uuid"
+
+	authservice "github.com/disillusioned-labs/identity/internal/service/auth"
 )
 
 type SessionResponse struct {
@@ -20,10 +21,11 @@ type UserResponse struct {
 }
 
 type OrganizationResponse struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Role string `json:"role"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Role     string `json:"role"`
+	IsFrozen bool   `json:"is_frozen"`
 }
 
 func newUserResponse(u authservice.UserOutput) UserResponse {
@@ -36,10 +38,11 @@ func newUserResponse(u authservice.UserOutput) UserResponse {
 
 func newOrganizationResponse(o authservice.OrganizationOutput) OrganizationResponse {
 	return OrganizationResponse{
-		ID:   o.ID.String(),
-		Name: o.Name,
-		Type: o.Type,
-		Role: o.Role,
+		ID:       o.ID.String(),
+		Name:     o.Name,
+		Type:     o.Type,
+		Role:     o.Role,
+		IsFrozen: o.IsFrozen,
 	}
 }
 
@@ -65,7 +68,7 @@ func toSwitchOrgResponse(out authservice.SwitchOrgOutput) TokensResponse {
 	}
 }
 
-func toLogoutResponse(out authservice.LogoutOutput) struct{} {
+func toLogoutResponse(_ authservice.LogoutOutput) struct{} {
 	return struct{}{}
 }
 
@@ -102,10 +105,11 @@ type MeUserResponse struct {
 }
 
 type MeOrganizationResponse struct {
-	ID   uuid.UUID `json:"id"`
-	Name string    `json:"name"`
-	Type string    `json:"type"`
-	Role string    `json:"role"`
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	Type     string    `json:"type"`
+	Role     string    `json:"role"`
+	IsFrozen bool      `json:"is_frozen"`
 }
 
 func toMeResponse(output authservice.MeOutput) MeResponse {
@@ -113,10 +117,11 @@ func toMeResponse(output authservice.MeOutput) MeResponse {
 
 	for _, organization := range output.Organizations {
 		organizations = append(organizations, MeOrganizationResponse{
-			ID:   organization.ID,
-			Name: organization.Name,
-			Type: organization.Type,
-			Role: organization.Role,
+			ID:       organization.ID,
+			Name:     organization.Name,
+			Type:     organization.Type,
+			Role:     organization.Role,
+			IsFrozen: organization.IsFrozen,
 		})
 	}
 
@@ -126,7 +131,7 @@ func toMeResponse(output authservice.MeOutput) MeResponse {
 			Name:  output.User.Name,
 			Email: output.User.Email,
 		},
-		ActiveOrganizationID: output.ActiveOrganizationId,
+		ActiveOrganizationID: output.ActiveOrganizationID,
 		Organizations:        organizations,
 	}
 }

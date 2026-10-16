@@ -6,8 +6,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/disillusioned-labs/platform/authkit"
 	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/disillusioned-labs/platform/authkit"
 )
 
 // RevocationStore is the Redis-backed denylist store. Identity is the only
@@ -17,12 +18,14 @@ import (
 // same keys through authkit's Verifier.
 type RevocationStore struct {
 	client *goredis.Client
+	reader authkit.Denylist
 	ttl    time.Duration
 }
 
 func NewRevocationStore(client *goredis.Client, ttl time.Duration) *RevocationStore {
 	return &RevocationStore{
 		client: client,
+		reader: authkit.NewRedisDenylist(client),
 		ttl:    ttl,
 	}
 }
@@ -54,31 +57,7 @@ func (s *RevocationStore) revoke(ctx context.Context, key string) error {
 }
 
 // RevokedAt returns the latest revocation time among the keys, or the zero
-// time when none of them is set. Missing and unparsable entries are skipped:
-// a malformed entry must never hard-fail verification, the TTL guarantees a
-// stale one disappears on its own.
+// time when none of them is set. Malformed entries fail verification closed.
 func (s *RevocationStore) RevokedAt(ctx context.Context, keys ...string) (time.Time, error) {
-	values, err := s.client.MGet(ctx, keys...).Result()
-	if err != nil {
-		return time.Time{}, fmt.Errorf("read revoke keys: %w", err)
-	}
-
-	var latest time.Time
-	for _, value := range values {
-		text, ok := value.(string)
-		if !ok {
-			continue
-		}
-
-		seconds, err := strconv.ParseInt(text, 10, 64)
-		if err != nil {
-			continue
-		}
-
-		if revokedAt := time.Unix(seconds, 0); revokedAt.After(latest) {
-			latest = revokedAt
-		}
-	}
-
-	return latest, nil
+	return s.reader.RevokedAt(ctx, keys...)
 }

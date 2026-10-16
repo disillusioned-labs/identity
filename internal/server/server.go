@@ -3,10 +3,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/disillusioned-labs/identity/internal/config"
 	"github.com/disillusioned-labs/identity/internal/handler"
@@ -123,9 +125,20 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) (*Server, error) {
 
 	authErrorHandler := func(
 		w http.ResponseWriter,
-		_ *http.Request,
-		_ error,
+		r *http.Request,
+		err error,
 	) {
+		if errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+			handler.WriteError(w, http.StatusGatewayTimeout, handler.CodeTimeout, "request timed out")
+			return
+		}
+		if errors.Is(err, authkit.ErrDenylistUnavailable) {
+			handler.WriteError(w, http.StatusServiceUnavailable, "AUTHORIZATION_UNAVAILABLE", "authorization could not be verified")
+			return
+		}
 		handler.WriteError(
 			w,
 			http.StatusUnauthorized,
@@ -199,6 +212,17 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) (*Server, error) {
 		}
 		r.Route("/auth", func(r chi.Router) {
 			authHandler.PublicRoutes(r)
+			r.Group(func(r chi.Router) {
+				r.Use(httprate.LimitBy(
+					5,
+					15*time.Minute,
+					keyByRemoteIP,
+					httprate.WithLimitHandler(func(w http.ResponseWriter, _ *http.Request) {
+						handler.WriteError(w, http.StatusTooManyRequests, handler.CodeRateLimited, "rate limit exceeded")
+					}),
+				))
+				authHandler.RecoveryRoutes(r)
+			})
 
 			r.Group(func(r chi.Router) {
 				r.Use(authMiddleware)
@@ -226,10 +250,12 @@ func New(cfg *config.Config, log *slog.Logger, deps Deps) (*Server, error) {
 
 	// otelhttp wraps the whole router: creates the server span, extracts
 	// incoming trace context, and records HTTP metrics. The filter drops probes
-	// from both signals - always-fast probe traffic in the same histogram drags
-	// the p99 down and dilutes the error-ratio denominator.
+	// and token-bearing invitation paths: probes skew latency, and otelhttp
+	// records URL paths verbatim.
 	root := otelhttp.NewHandler(r, "http.server",
-		otelhttp.WithFilter(func(r *http.Request) bool { return !isProbe(r.URL.Path) }),
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return !isProbe(r.URL.Path) && !hasInvitationTokenPath(r.URL.Path)
+		}),
 	)
 
 	httpServer, err := httpserver.New(

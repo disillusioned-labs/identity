@@ -75,7 +75,8 @@ const getOrganizationByID = `-- name: GetOrganizationByID :one
 SELECT id,
        name,
        type,
-       deleted_at
+       deleted_at,
+       frozen_at
 FROM organizations
 WHERE id = $1
 `
@@ -85,6 +86,7 @@ type GetOrganizationByIDRow struct {
 	Name      string             `json:"name"`
 	Type      string             `json:"type"`
 	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+	FrozenAt  pgtype.Timestamptz `json:"frozen_at"`
 }
 
 func (q *Queries) GetOrganizationByID(ctx context.Context, id uuid.UUID) (GetOrganizationByIDRow, error) {
@@ -95,6 +97,7 @@ func (q *Queries) GetOrganizationByID(ctx context.Context, id uuid.UUID) (GetOrg
 		&i.Name,
 		&i.Type,
 		&i.DeletedAt,
+		&i.FrozenAt,
 	)
 	return i, err
 }
@@ -138,6 +141,66 @@ func (q *Queries) GetOrganizationMember(ctx context.Context, arg GetOrganization
 		&i.JoinedAt,
 	)
 	return i, err
+}
+
+const getOrganizationStatusForShare = `-- name: GetOrganizationStatusForShare :one
+SELECT deleted_at,
+       frozen_at
+FROM organizations
+WHERE id = $1
+FOR SHARE
+`
+
+type GetOrganizationStatusForShareRow struct {
+	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+	FrozenAt  pgtype.Timestamptz `json:"frozen_at"`
+}
+
+func (q *Queries) GetOrganizationStatusForShare(ctx context.Context, id uuid.UUID) (GetOrganizationStatusForShareRow, error) {
+	row := q.db.QueryRow(ctx, getOrganizationStatusForShare, id)
+	var i GetOrganizationStatusForShareRow
+	err := row.Scan(&i.DeletedAt, &i.FrozenAt)
+	return i, err
+}
+
+const getOrganizationStatusForUpdate = `-- name: GetOrganizationStatusForUpdate :one
+SELECT deleted_at,
+       frozen_at
+FROM organizations
+WHERE id = $1
+FOR UPDATE
+`
+
+type GetOrganizationStatusForUpdateRow struct {
+	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+	FrozenAt  pgtype.Timestamptz `json:"frozen_at"`
+}
+
+func (q *Queries) GetOrganizationStatusForUpdate(ctx context.Context, id uuid.UUID) (GetOrganizationStatusForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getOrganizationStatusForUpdate, id)
+	var i GetOrganizationStatusForUpdateRow
+	err := row.Scan(&i.DeletedAt, &i.FrozenAt)
+	return i, err
+}
+
+const setOrganizationFrozen = `-- name: SetOrganizationFrozen :execrows
+UPDATE organizations
+SET frozen_at = CASE WHEN $2::boolean THEN COALESCE(frozen_at, now()) ELSE NULL END
+WHERE id = $1
+  AND deleted_at IS NULL
+`
+
+type SetOrganizationFrozenParams struct {
+	ID       uuid.UUID `json:"id"`
+	IsFrozen bool      `json:"is_frozen"`
+}
+
+func (q *Queries) SetOrganizationFrozen(ctx context.Context, arg SetOrganizationFrozenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setOrganizationFrozen, arg.ID, arg.IsFrozen)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const softDeleteOrganization = `-- name: SoftDeleteOrganization :execrows

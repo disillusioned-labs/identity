@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,13 +16,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/disillusioned-labs/identity/internal/constant"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
 	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var tracer = otel.Tracer("service/organization_invitation")
@@ -44,14 +46,16 @@ type OrganizationInvitationService interface {
 }
 
 type organizationInvitationService struct {
-	repo repository.Store
-	log  *slog.Logger
+	repo          repository.Store
+	invitationURL string
+	log           *slog.Logger
 }
 
-func NewOrganizationInvitationService(repo repository.Store, log *slog.Logger) OrganizationInvitationService {
+func NewOrganizationInvitationService(repo repository.Store, invitationURL string, log *slog.Logger) OrganizationInvitationService {
 	return &organizationInvitationService{
-		repo: repo,
-		log:  log,
+		repo:          repo,
+		invitationURL: invitationURL,
+		log:           log,
 	}
 }
 
@@ -180,6 +184,18 @@ func (s *organizationInvitationService) CreateInvitation(ctx context.Context, in
 	}
 
 	expiresAt := now.Add(invitationExpiration)
+	if strings.TrimSpace(s.invitationURL) == "" {
+		span.SetStatus(codes.Error, "invitation URL is not configured")
+		s.log.ErrorContext(ctx, "invitation URL is not configured", "organization_id", input.OrganizationID)
+		return CreateInvitationOutput{}, service.ErrInternal
+	}
+	inviteURL, err := url.JoinPath(s.invitationURL, rawToken)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "build invitation URL failed")
+		s.log.ErrorContext(ctx, "build invitation URL failed", "error", err, "organization_id", input.OrganizationID)
+		return CreateInvitationOutput{}, service.ErrInternal
+	}
 
 	var invitation repository.OrganizationInvitation
 
@@ -230,7 +246,7 @@ func (s *organizationInvitationService) CreateInvitation(ctx context.Context, in
 		notificationPayload, err := json.Marshal(map[string]string{
 			"organization_name": currentMember.OrganizationName,
 			"inviter_name":      currentMember.UserName,
-			"invite_url":        hashInvitationToken(rawToken),
+			"invite_url":        inviteURL,
 		})
 		if err != nil {
 			return err

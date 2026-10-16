@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	platformconfig "github.com/disillusioned-labs/platform/config"
 	"github.com/spf13/viper"
+
+	platformconfig "github.com/disillusioned-labs/platform/config"
 )
 
 // .env.example is the documented list of every setting, so a key that no longer
@@ -390,7 +391,7 @@ func validConfig() *Config {
 			DSN: "postgres://app:app@localhost:5433/app", MaxConns: 25, MinConns: 2,
 			MaxConnLifetime: time.Hour, QueryExecMode: "cache_statement",
 		},
-		Redis: platformconfig.RedisConfig{Mode: platformconfig.RedisModeOptional, Addr: "localhost:6380"},
+		Redis: platformconfig.RedisConfig{Mode: platformconfig.RedisModeRequired, Addr: "localhost:6380"},
 		Cache: platformconfig.CacheConfig{DefaultTTL: 5 * time.Minute},
 		Kafka: platformconfig.KafkaConfig{
 			Brokers:     []string{"localhost:9092"},
@@ -413,6 +414,8 @@ func validConfig() *Config {
 			AccessTokenTTL:  15 * time.Minute,
 			RefreshTokenTTL: 168 * time.Hour,
 			Issuer:          "identity",
+			RecoveryURL:     "https://app.example.test/account/recovery",
+			InvitationURL:   "https://app.example.test/invite",
 		},
 		GRPCClient: platformconfig.GRPCClientConfig{
 			Timeout: 2 * time.Second, MaxRecvMsgSize: 4194304, MaxSendMsgSize: 4194304,

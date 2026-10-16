@@ -19,6 +19,7 @@ type Organization struct {
 	CreatedAt time.Time          `json:"created_at"`
 	UpdatedAt time.Time          `json:"updated_at"`
 	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+	FrozenAt  pgtype.Timestamptz `json:"frozen_at"`
 }
 
 type OrganizationInvitation struct {
@@ -69,6 +70,14 @@ type OutboxEvent struct {
 	LockedAt      pgtype.Timestamptz `json:"locked_at"`
 	LockedBy      pgtype.Text        `json:"locked_by"`
 	LastError     pgtype.Text        `json:"last_error"`
+}
+
+type PasswordRecoveryToken struct {
+	UserID    uuid.UUID          `json:"user_id"`
+	TokenHash string             `json:"token_hash"`
+	ExpiresAt time.Time          `json:"expires_at"`
+	UsedAt    pgtype.Timestamptz `json:"used_at"`
+	CreatedAt time.Time          `json:"created_at"`
 }
 
 type RefreshToken struct {

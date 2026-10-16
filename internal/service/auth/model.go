@@ -38,7 +38,7 @@ type MeInput struct {
 
 type MeOutput struct {
 	User                 MeUserOutput
-	ActiveOrganizationId *uuid.UUID
+	ActiveOrganizationID *uuid.UUID
 	Organizations        []MeOrganizationOutput
 }
 
@@ -49,10 +49,11 @@ type MeUserOutput struct {
 }
 
 type MeOrganizationOutput struct {
-	ID   uuid.UUID
-	Name string
-	Type string
-	Role string
+	ID       uuid.UUID
+	Name     string
+	Type     string
+	Role     string
+	IsFrozen bool
 }
 
 // GetUsersByIDs
@@ -89,6 +90,21 @@ type LogoutInput struct {
 
 type LogoutOutput struct{}
 
+// RequestPasswordRecovery
+type RequestPasswordRecoveryInput struct {
+	Email string
+}
+
+type RequestPasswordRecoveryOutput struct{}
+
+// ResetPassword
+type ResetPasswordInput struct {
+	Token    string
+	Password string
+}
+
+type ResetPasswordOutput struct{}
+
 // SwitchOrg
 type SwitchOrgInput struct {
 	UserID         uuid.UUID
@@ -111,10 +127,11 @@ type UserOutput struct {
 }
 
 type OrganizationOutput struct {
-	ID   uuid.UUID
-	Name string
-	Type string
-	Role string
+	ID       uuid.UUID
+	Name     string
+	Type     string
+	Role     string
+	IsFrozen bool
 }
 
 type TokensOutput struct {

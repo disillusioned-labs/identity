@@ -6,16 +6,17 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/disillusioned-labs/identity/internal/constant"
-	"github.com/disillusioned-labs/identity/internal/contract"
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/identity/internal/service"
-	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+
+	"github.com/disillusioned-labs/identity/internal/constant"
+	"github.com/disillusioned-labs/identity/internal/contract"
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 )
 
 var tracer = otel.Tracer("service/organization_member")
@@ -247,6 +248,10 @@ func (s *organizationMemberService) UpdateOrganizationMemberRole(
 	var updatedMember repository.GetUserOrganizationRow
 
 	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+			return err
+		}
+
 		rows, err := q.UpdateOrganizationMemberRole(
 			ctx,
 			repository.UpdateOrganizationMemberRoleParams{
@@ -539,6 +544,28 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 	}
 
 	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+			return err
+		}
+
+		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID:         input.TargetUserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			return err
+		}
+
+		targetUser, err := q.GetUserByID(ctx, input.TargetUserID)
+		if err != nil {
+			return err
+		}
+
+		remover, err := q.GetUserByID(ctx, input.UserID)
+		if err != nil {
+			return err
+		}
+
 		rows, err := q.SoftDeleteOrganizationMember(
 			ctx,
 			repository.SoftDeleteOrganizationMemberParams{
@@ -570,24 +597,6 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 			constant.TopicAudit,
 			event,
 		); err != nil {
-			return err
-		}
-
-		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
-			UserID:         input.TargetUserID,
-			OrganizationID: input.OrganizationID,
-		})
-		if err != nil {
-			return err
-		}
-
-		targetUser, err := q.GetUserByID(ctx, input.TargetUserID)
-		if err != nil {
-			return err
-		}
-
-		remover, err := q.GetUserByID(ctx, input.UserID)
-		if err != nil {
 			return err
 		}
 
@@ -704,6 +713,10 @@ func (s *organizationMemberService) LeaveOrganization(
 		var replacementOrganization repository.CreateOrganizationRow
 
 		err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+			if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+				return err
+			}
+
 			rows, err := q.SoftDeleteOrganizationMember(
 				ctx,
 				repository.SoftDeleteOrganizationMemberParams{
@@ -883,6 +896,10 @@ func (s *organizationMemberService) LeaveOrganization(
 			}
 
 			err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+				if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+					return err
+				}
+
 				rows, err := q.SoftDeleteOrganizationMember(
 					ctx,
 					repository.SoftDeleteOrganizationMemberParams{
@@ -982,6 +999,10 @@ func (s *organizationMemberService) LeaveOrganization(
 	}
 
 	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+			return err
+		}
+
 		rows, err := q.SoftDeleteOrganizationMember(
 			ctx,
 			repository.SoftDeleteOrganizationMemberParams{
@@ -1060,4 +1081,12 @@ func (s *organizationMemberService) revokeMemberAccess(ctx context.Context, orga
 		span.SetStatus(codes.Error, "write member revocation failed")
 		s.log.ErrorContext(ctx, "write member revocation failed", "error", err, "organization_id", organizationID, "user_id", userID)
 	}
+}
+
+func lockOrganization(ctx context.Context, q repository.Querier, organizationID uuid.UUID) error {
+	status, err := q.GetOrganizationStatusForUpdate(ctx, organizationID)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && status.DeletedAt.Valid {
+		return pgx.ErrNoRows
+	}
+	return err
 }

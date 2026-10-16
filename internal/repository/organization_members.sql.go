@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countActiveOrganizationMembers = `-- name: CountActiveOrganizationMembers :one
@@ -89,7 +90,8 @@ SELECT
     m.role,
     m.joined_at,
     o.name AS organization_name,
-    o.type AS organization_type
+    o.type AS organization_type,
+    o.frozen_at
 FROM organization_members m
          JOIN organizations o
               ON o.id = m.organization_id
@@ -108,14 +110,15 @@ type GetUserOrganizationParams struct {
 }
 
 type GetUserOrganizationRow struct {
-	OrganizationID   uuid.UUID `json:"organization_id"`
-	UserID           uuid.UUID `json:"user_id"`
-	UserName         string    `json:"user_name"`
-	Email            string    `json:"email"`
-	Role             string    `json:"role"`
-	JoinedAt         time.Time `json:"joined_at"`
-	OrganizationName string    `json:"organization_name"`
-	OrganizationType string    `json:"organization_type"`
+	OrganizationID   uuid.UUID          `json:"organization_id"`
+	UserID           uuid.UUID          `json:"user_id"`
+	UserName         string             `json:"user_name"`
+	Email            string             `json:"email"`
+	Role             string             `json:"role"`
+	JoinedAt         time.Time          `json:"joined_at"`
+	OrganizationName string             `json:"organization_name"`
+	OrganizationType string             `json:"organization_type"`
+	FrozenAt         pgtype.Timestamptz `json:"frozen_at"`
 }
 
 func (q *Queries) GetUserOrganization(ctx context.Context, arg GetUserOrganizationParams) (GetUserOrganizationRow, error) {
@@ -130,6 +133,7 @@ func (q *Queries) GetUserOrganization(ctx context.Context, arg GetUserOrganizati
 		&i.JoinedAt,
 		&i.OrganizationName,
 		&i.OrganizationType,
+		&i.FrozenAt,
 	)
 	return i, err
 }
@@ -175,6 +179,61 @@ type GetUserOrganizationByEmailRow struct {
 func (q *Queries) GetUserOrganizationByEmail(ctx context.Context, arg GetUserOrganizationByEmailParams) (GetUserOrganizationByEmailRow, error) {
 	row := q.db.QueryRow(ctx, getUserOrganizationByEmail, arg.OrganizationID, arg.Email)
 	var i GetUserOrganizationByEmailRow
+	err := row.Scan(
+		&i.OrganizationID,
+		&i.UserID,
+		&i.UserName,
+		&i.Email,
+		&i.Role,
+		&i.JoinedAt,
+		&i.OrganizationName,
+		&i.OrganizationType,
+	)
+	return i, err
+}
+
+const getUserOrganizationForUpdate = `-- name: GetUserOrganizationForUpdate :one
+SELECT
+    m.organization_id,
+    m.user_id,
+    u.name AS user_name,
+    u.email,
+    m.role,
+    m.joined_at,
+    o.name AS organization_name,
+    o.type AS organization_type
+FROM organization_members m
+         JOIN organizations o
+              ON o.id = m.organization_id
+         JOIN users u
+              ON u.id = m.user_id
+WHERE m.user_id = $1
+  AND m.organization_id = $2
+  AND m.deleted_at IS NULL
+  AND o.deleted_at IS NULL
+  AND u.deleted_at IS NULL
+FOR UPDATE OF m
+`
+
+type GetUserOrganizationForUpdateParams struct {
+	UserID         uuid.UUID `json:"user_id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+}
+
+type GetUserOrganizationForUpdateRow struct {
+	OrganizationID   uuid.UUID `json:"organization_id"`
+	UserID           uuid.UUID `json:"user_id"`
+	UserName         string    `json:"user_name"`
+	Email            string    `json:"email"`
+	Role             string    `json:"role"`
+	JoinedAt         time.Time `json:"joined_at"`
+	OrganizationName string    `json:"organization_name"`
+	OrganizationType string    `json:"organization_type"`
+}
+
+func (q *Queries) GetUserOrganizationForUpdate(ctx context.Context, arg GetUserOrganizationForUpdateParams) (GetUserOrganizationForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getUserOrganizationForUpdate, arg.UserID, arg.OrganizationID)
+	var i GetUserOrganizationForUpdateRow
 	err := row.Scan(
 		&i.OrganizationID,
 		&i.UserID,
@@ -243,7 +302,8 @@ SELECT
     m.organization_id,
     m.role,
     o.name,
-    o.type
+    o.type,
+    o.frozen_at
 FROM organization_members m
          JOIN organizations o
               ON o.id = m.organization_id
@@ -254,10 +314,11 @@ ORDER BY m.joined_at
 `
 
 type ListUserOrganizationsRow struct {
-	OrganizationID uuid.UUID `json:"organization_id"`
-	Role           string    `json:"role"`
-	Name           string    `json:"name"`
-	Type           string    `json:"type"`
+	OrganizationID uuid.UUID          `json:"organization_id"`
+	Role           string             `json:"role"`
+	Name           string             `json:"name"`
+	Type           string             `json:"type"`
+	FrozenAt       pgtype.Timestamptz `json:"frozen_at"`
 }
 
 func (q *Queries) ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error) {
@@ -274,6 +335,7 @@ func (q *Queries) ListUserOrganizations(ctx context.Context, userID uuid.UUID) (
 			&i.Role,
 			&i.Name,
 			&i.Type,
+			&i.FrozenAt,
 		); err != nil {
 			return nil, err
 		}

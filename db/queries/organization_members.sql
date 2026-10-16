@@ -16,7 +16,8 @@ SELECT
     m.organization_id,
     m.role,
     o.name,
-    o.type
+    o.type,
+    o.frozen_at
 FROM organization_members m
          JOIN organizations o
               ON o.id = m.organization_id
@@ -26,6 +27,28 @@ WHERE m.user_id = $1
 ORDER BY m.joined_at;
 
 -- name: GetUserOrganization :one
+SELECT
+    m.organization_id,
+    m.user_id,
+    u.name AS user_name,
+    u.email,
+    m.role,
+    m.joined_at,
+    o.name AS organization_name,
+    o.type AS organization_type,
+    o.frozen_at
+FROM organization_members m
+         JOIN organizations o
+              ON o.id = m.organization_id
+         JOIN users u
+              ON u.id = m.user_id
+WHERE m.user_id = $1
+  AND m.organization_id = $2
+  AND m.deleted_at IS NULL
+  AND o.deleted_at IS NULL
+  AND u.deleted_at IS NULL;
+
+-- name: GetUserOrganizationForUpdate :one
 SELECT
     m.organization_id,
     m.user_id,
@@ -44,7 +67,8 @@ WHERE m.user_id = $1
   AND m.organization_id = $2
   AND m.deleted_at IS NULL
   AND o.deleted_at IS NULL
-  AND u.deleted_at IS NULL;
+  AND u.deleted_at IS NULL
+FOR UPDATE OF m;
 
 -- name: GetUserOrganizationByEmail :one
 SELECT

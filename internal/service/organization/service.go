@@ -6,15 +6,16 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/disillusioned-labs/identity/internal/constant"
-	"github.com/disillusioned-labs/identity/internal/repository"
-	"github.com/disillusioned-labs/identity/internal/service"
-	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+
+	"github.com/disillusioned-labs/identity/internal/constant"
+	"github.com/disillusioned-labs/identity/internal/repository"
+	"github.com/disillusioned-labs/identity/internal/service"
+	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
 )
 
 var tracer = otel.Tracer("service/organization")
@@ -29,6 +30,10 @@ type OrganizationService interface {
 	CreateOrganization(ctx context.Context, input CreateInput) (CreateOutput, error)
 	GetOrganization(ctx context.Context, input GetInput) (GetOutput, error)
 	GetOrganizationStatus(ctx context.Context, input GetOrganizationStatusInput) (GetOrganizationStatusOutput, error)
+	// HoldExpenseWriteAccess serializes an Expense mutation against Identity authorization changes.
+	HoldExpenseWriteAccess(ctx context.Context, input HoldExpenseWriteAccessInput, hold func(HoldExpenseWriteAccessOutput) error) error
+	// SetFrozen changes the organization freeze state for an owner or admin.
+	SetFrozen(ctx context.Context, input SetFrozenInput) error
 	UpdateOrganization(ctx context.Context, input UpdateInput) (UpdateOutput, error)
 	DeleteOrganization(ctx context.Context, input DeleteInput) (DeleteOutput, error)
 	Transfer(ctx context.Context, input TransferInput) (TransferOutput, error)
@@ -58,10 +63,11 @@ func (s *organizationService) ListOrganizations(ctx context.Context, input ListI
 	organizations := make([]OrganizationOutput, 0, len(organizationRows))
 	for _, organizationRow := range organizationRows {
 		organizations = append(organizations, OrganizationOutput{
-			ID:   organizationRow.OrganizationID,
-			Name: organizationRow.Name,
-			Type: organizationRow.Type,
-			Role: organizationRow.Role,
+			ID:       organizationRow.OrganizationID,
+			Name:     organizationRow.Name,
+			Type:     organizationRow.Type,
+			Role:     organizationRow.Role,
+			IsFrozen: organizationRow.FrozenAt.Valid,
 		})
 	}
 
@@ -171,10 +177,11 @@ func (s *organizationService) GetOrganization(ctx context.Context, input GetInpu
 
 	return GetOutput{
 		Organization: OrganizationOutput{
-			ID:   organization.OrganizationID,
-			Name: organization.OrganizationName,
-			Type: organization.OrganizationType,
-			Role: organization.Role,
+			ID:       organization.OrganizationID,
+			Name:     organization.OrganizationName,
+			Type:     organization.OrganizationType,
+			Role:     organization.Role,
+			IsFrozen: organization.FrozenAt.Valid,
 		},
 	}, nil
 }
@@ -189,10 +196,11 @@ func (s *organizationService) UpdateOrganization(ctx context.Context, input Upda
 	)
 
 	var (
-		organizationID   uuid.UUID
-		organizationName string
-		organizationType string
-		memberRole       string
+		organizationID     uuid.UUID
+		organizationName   string
+		organizationType   string
+		memberRole         string
+		organizationFrozen bool
 	)
 
 	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
@@ -223,6 +231,7 @@ func (s *organizationService) UpdateOrganization(ctx context.Context, input Upda
 		organizationName = organization.Name
 		organizationType = organization.Type
 		memberRole = currentMember.Role
+		organizationFrozen = currentMember.FrozenAt.Valid
 
 		event := OrganizationUpdatedEvent{
 			OrganizationID: organization.ID,
@@ -262,10 +271,11 @@ func (s *organizationService) UpdateOrganization(ctx context.Context, input Upda
 
 	return UpdateOutput{
 		Organization: OrganizationOutput{
-			ID:   organizationID,
-			Name: organizationName,
-			Type: organizationType,
-			Role: memberRole,
+			ID:       organizationID,
+			Name:     organizationName,
+			Type:     organizationType,
+			Role:     memberRole,
+			IsFrozen: organizationFrozen,
 		},
 	}, nil
 }
@@ -285,6 +295,10 @@ func (s *organizationService) DeleteOrganization(ctx context.Context, input Dele
 	)
 
 	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if _, err := q.GetOrganizationStatusForUpdate(ctx, input.OrganizationID); err != nil {
+			return err
+		}
+
 		currentMember, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
 			UserID:         input.UserID,
 			OrganizationID: input.OrganizationID,
@@ -433,6 +447,10 @@ func (s *organizationService) Transfer(ctx context.Context, input TransferInput)
 	var output TransferOutput
 
 	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if _, err := q.GetOrganizationStatusForUpdate(ctx, input.OrganizationID); err != nil {
+			return err
+		}
+
 		currentMember, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
 			UserID:         input.UserID,
 			OrganizationID: input.OrganizationID,
@@ -497,10 +515,11 @@ func (s *organizationService) Transfer(ctx context.Context, input TransferInput)
 
 		output = TransferOutput{
 			Organization: OrganizationOutput{
-				ID:   input.OrganizationID,
-				Name: targetMember.OrganizationName,
-				Type: targetMember.OrganizationType,
-				Role: constant.RoleOwner,
+				ID:       input.OrganizationID,
+				Name:     targetMember.OrganizationName,
+				Type:     targetMember.OrganizationType,
+				Role:     constant.RoleOwner,
+				IsFrozen: currentMember.FrozenAt.Valid,
 			},
 			From: TransferUserOutput{
 				ID:   currentMember.UserID,
@@ -569,7 +588,134 @@ func (s *organizationService) GetOrganizationStatus(
 	span.SetAttributes(attribute.String("organization.id", input.OrganizationID.String()))
 
 	return GetOrganizationStatusOutput{
-		IsFrozen:  false,
+		IsFrozen:  row.FrozenAt.Valid,
 		IsDeleted: row.DeletedAt.Valid,
 	}, nil
+}
+
+func (s *organizationService) HoldExpenseWriteAccess(
+	ctx context.Context,
+	input HoldExpenseWriteAccessInput,
+	hold func(HoldExpenseWriteAccessOutput) error,
+) error {
+	ctx, span := tracer.Start(ctx, "OrganizationService.HoldExpenseWriteAccess")
+	defer span.End()
+
+	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		status, err := q.GetOrganizationStatusForShare(ctx, input.OrganizationID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		output := HoldExpenseWriteAccessOutput{IsDeleted: errors.Is(err, pgx.ErrNoRows)}
+		if err == nil {
+			output.IsDeleted = status.DeletedAt.Valid
+			output.IsFrozen = status.FrozenAt.Valid
+		}
+
+		if !output.IsDeleted {
+			member, memberErr := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+				UserID:         input.UserID,
+				OrganizationID: input.OrganizationID,
+			})
+			if memberErr != nil && !errors.Is(memberErr, pgx.ErrNoRows) {
+				return memberErr
+			}
+			if memberErr == nil {
+				output.MemberActive = true
+				output.ServiceAllowed = member.Role == constant.RoleOwner || member.Role == constant.RoleAdmin
+				if !output.ServiceAllowed {
+					output.ServiceAllowed, err = q.IsServiceAccessAllowed(ctx, repository.IsServiceAccessAllowedParams{
+						OrganizationID: input.OrganizationID,
+						UserID:         input.UserID,
+						ServiceName:    "expense",
+					})
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		span.SetAttributes(attribute.String("organization.id", input.OrganizationID.String()))
+		return hold(output)
+	})
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "hold expense write access failed")
+		s.log.ErrorContext(ctx, "hold expense write access failed", "error", err, "organization_id", input.OrganizationID)
+		return service.ErrInternal
+	}
+	return nil
+}
+
+func (s *organizationService) SetFrozen(ctx context.Context, input SetFrozenInput) error {
+	ctx, span := tracer.Start(ctx, "OrganizationService.SetFrozen")
+	defer span.End()
+
+	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		// Lock organization before membership so Expense writers drain before the state change.
+		status, err := q.GetOrganizationStatusForUpdate(ctx, input.OrganizationID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return service.ErrNotFound
+			}
+			return err
+		}
+		if status.DeletedAt.Valid {
+			return service.ErrNotFound
+		}
+
+		member, err := q.GetUserOrganizationForUpdate(ctx, repository.GetUserOrganizationForUpdateParams{
+			UserID:         input.UserID,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return service.ErrNotFound
+			}
+			return err
+		}
+		if member.Role != constant.RoleOwner && member.Role != constant.RoleAdmin {
+			return service.ErrForbidden
+		}
+
+		if status.FrozenAt.Valid == input.Frozen {
+			return nil
+		}
+
+		rows, err := q.SetOrganizationFrozen(ctx, repository.SetOrganizationFrozenParams{
+			ID:       input.OrganizationID,
+			IsFrozen: input.Frozen,
+		})
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return service.ErrNotFound
+		}
+
+		eventType := EventOrganizationUnfrozen
+		if input.Frozen {
+			eventType = EventOrganizationFrozen
+		}
+		return service.Emit(ctx, q, organizationAggregateType, input.OrganizationID, eventType, organizationEventVersion, constant.TopicAudit, OrganizationFreezeEvent{
+			OrganizationID: input.OrganizationID,
+			UserID:         input.UserID,
+		})
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) || errors.Is(err, service.ErrForbidden) {
+			return err
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "set organization frozen status failed")
+		s.log.ErrorContext(ctx, "set organization frozen status failed", "error", err, "user_id", input.UserID, "organization_id", input.OrganizationID)
+		return service.ErrInternal
+	}
+
+	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
@@ -77,6 +78,10 @@ func (s *IdentityServer) IsMemberActive(
 		UserID:         userID,
 	})
 	if err != nil {
+		var domainErr *platformerrors.Error
+		if errors.As(err, &domainErr) && domainErr.Code == platformerrors.ErrNotFound.Code {
+			return &identitypb.IsMemberActiveResponse{IsActive: false}, nil
+		}
 		return nil, writeServiceErr(ctx, span, s.log, err, "get member failed",
 			"organization_id", organizationID, "user_id", userID)
 	}
@@ -255,6 +260,65 @@ func (s *IdentityServer) IsServiceAccessAllowed(
 	return &identitypb.IsServiceAccessAllowedResponse{
 		Allowed: allowed,
 	}, nil
+}
+
+// HoldExpenseWriteAccess keeps authorization state locked until Expense closes the stream.
+func (s *IdentityServer) HoldExpenseWriteAccess(
+	req *identitypb.HoldExpenseWriteAccessRequest,
+	stream identitypb.IdentityService_HoldExpenseWriteAccessServer,
+) error {
+	ctx := stream.Context()
+	organizationID, err := uuid.Parse(req.GetOrganizationId())
+	if err != nil {
+		return status.Error(codes.InvalidArgument, "invalid organization_id")
+	}
+	userID, err := uuid.Parse(req.GetUserId())
+	if err != nil {
+		return status.Error(codes.InvalidArgument, "invalid user_id")
+	}
+
+	spanCtx, span := tracer.Start(ctx, "IdentityServer.HoldExpenseWriteAccess")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("organization.id", organizationID.String()),
+		attribute.String("user.id", userID.String()),
+	)
+
+	err = s.organizationService.HoldExpenseWriteAccess(spanCtx, organizationservice.HoldExpenseWriteAccessInput{
+		OrganizationID: organizationID,
+		UserID:         userID,
+	}, func(access organizationservice.HoldExpenseWriteAccessOutput) error {
+		if err := stream.Send(&identitypb.HoldExpenseWriteAccessResponse{
+			Ready:               true,
+			MemberActive:        access.MemberActive,
+			ServiceAllowed:      access.ServiceAllowed,
+			OrganizationFrozen:  access.IsFrozen,
+			OrganizationDeleted: access.IsDeleted,
+		}); err != nil {
+			return err
+		}
+
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				if err := stream.Send(&identitypb.HoldExpenseWriteAccessResponse{Heartbeat: true}); err != nil {
+					return err
+				}
+			}
+		}
+	})
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return nil
+	}
+	if err != nil {
+		return writeServiceErr(spanCtx, span, s.log, err, "hold Expense write access failed",
+			"organization_id", organizationID, "user_id", userID)
+	}
+	return nil
 }
 
 // GetDeviceTokens returns the push tokens of a user's active devices, for the

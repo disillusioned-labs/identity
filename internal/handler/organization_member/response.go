@@ -63,7 +63,7 @@ type RemoveOrganizationMemberResponse struct {
 }
 
 func toRemoveOrganizationMemberResponse(
-	output organizationmemberservice.RemoveOrganizationMemberOutput,
+	_ organizationmemberservice.RemoveOrganizationMemberOutput,
 ) RemoveOrganizationMemberResponse {
 	return RemoveOrganizationMemberResponse{
 		Removed: true,

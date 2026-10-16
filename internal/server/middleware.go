@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/disillusioned-labs/identity/internal/handler"
@@ -21,6 +22,11 @@ import (
 // so the two skip lists cannot drift apart.
 func isProbe(path string) bool {
 	return path == "/healthz" || path == "/readyz"
+}
+
+// hasInvitationTokenPath matches routes that carry a bearer credential in the path.
+func hasInvitationTokenPath(path string) bool {
+	return strings.Contains(path, "/invitations/token/")
 }
 
 // requestLogger emits one structured log line per request, correlated with
@@ -41,7 +47,7 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 			// trace_id/span_id come from the logger's trace-aware handler.
 			attrs := []any{
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", loggedPath(r.URL.Path),
 				"status", ww.Status(),
 				"bytes", ww.BytesWritten(),
 				"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
@@ -52,6 +58,13 @@ func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 			log.LogAttrs(r.Context(), levelFor(ww.Status()), "http request", toAttrs(attrs)...)
 		})
 	}
+}
+
+func loggedPath(path string) string {
+	if hasInvitationTokenPath(path) {
+		return "[REDACTED]"
+	}
+	return path
 }
 
 func requestIDResponse(next http.Handler) http.Handler {

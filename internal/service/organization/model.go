@@ -42,6 +42,25 @@ type GetOrganizationStatusOutput struct {
 	IsDeleted bool
 }
 
+type HoldExpenseWriteAccessInput struct {
+	OrganizationID uuid.UUID
+	UserID         uuid.UUID
+}
+
+type HoldExpenseWriteAccessOutput struct {
+	MemberActive   bool
+	ServiceAllowed bool
+	IsFrozen       bool
+	IsDeleted      bool
+}
+
+// SetFrozenInput contains the actor and target state for an organization freeze transition.
+type SetFrozenInput struct {
+	UserID         uuid.UUID
+	OrganizationID uuid.UUID
+	Frozen         bool
+}
+
 // Update
 type UpdateInput struct {
 	UserID         uuid.UUID
@@ -81,8 +100,9 @@ type TransferUserOutput struct {
 }
 
 type OrganizationOutput struct {
-	ID   uuid.UUID
-	Name string
-	Type string
-	Role string
+	ID       uuid.UUID
+	Name     string
+	Type     string
+	Role     string
+	IsFrozen bool
 }

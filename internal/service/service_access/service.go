@@ -5,12 +5,14 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/disillusioned-labs/identity/internal/constant"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
-	"github.com/google/uuid"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
 )
 
 var tracer = otel.Tracer("service/service_access")
@@ -37,22 +39,17 @@ func (s *serviceAccessService) GrantAccess(ctx context.Context, input GrantAcces
 	ctx, span := tracer.Start(ctx, "ServiceAccessService.GrantAccess")
 	defer span.End()
 
-	// Verify the granter is admin/owner of the organization.
-	member, err := s.repo.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
-		UserID:         input.GrantedBy,
-		OrganizationID: input.OrganizationID,
-	})
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "get user organization failed")
-		s.log.ErrorContext(ctx, "get user organization failed", "error", err)
-		return service.ErrNotFound
-	}
-	if member.Role != constant.RoleOwner && member.Role != constant.RoleAdmin {
-		return service.ErrForbidden
+	if err := s.requireOrgAdmin(ctx, input.OrganizationID, input.GrantedBy); err != nil {
+		return err
 	}
 
 	if err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+			return err
+		}
+		if err := requireOrgAdminWith(ctx, q, input.OrganizationID, input.GrantedBy); err != nil {
+			return err
+		}
 		if err := q.GrantServiceAccess(ctx, repository.GrantServiceAccessParams{
 			OrganizationID: input.OrganizationID,
 			UserID:         input.UserID,
@@ -69,6 +66,9 @@ func (s *serviceAccessService) GrantAccess(ctx context.Context, input GrantAcces
 				ActorID:        input.GrantedBy,
 			})
 	}); err != nil {
+		if errors.Is(err, service.ErrNotFound) || errors.Is(err, service.ErrForbidden) {
+			return err
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "grant service access failed")
 		s.log.ErrorContext(ctx, "grant service access failed", "error", err)
@@ -82,7 +82,17 @@ func (s *serviceAccessService) RevokeAccess(ctx context.Context, input RevokeAcc
 	ctx, span := tracer.Start(ctx, "ServiceAccessService.RevokeAccess")
 	defer span.End()
 
+	if err := s.requireOrgAdmin(ctx, input.OrganizationID, input.RevokedBy); err != nil {
+		return err
+	}
+
 	err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+			return err
+		}
+		if err := requireOrgAdminWith(ctx, q, input.OrganizationID, input.RevokedBy); err != nil {
+			return err
+		}
 		rows, err := q.RevokeServiceAccess(ctx, repository.RevokeServiceAccessParams{
 			OrganizationID: input.OrganizationID,
 			UserID:         input.UserID,
@@ -99,11 +109,12 @@ func (s *serviceAccessService) RevokeAccess(ctx context.Context, input RevokeAcc
 				OrganizationID: input.OrganizationID,
 				UserID:         input.UserID,
 				ServiceName:    input.ServiceName,
+				ActorID:        input.RevokedBy,
 			})
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrNotFound) {
-			return service.ErrNotFound
+		if errors.Is(err, service.ErrNotFound) || errors.Is(err, service.ErrForbidden) {
+			return err
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "revoke service access failed")
@@ -118,6 +129,9 @@ func (s *serviceAccessService) RevokeAllAccess(ctx context.Context, input Revoke
 	defer span.End()
 
 	if err := s.repo.ExecTx(ctx, func(q repository.Querier) error {
+		if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
+			return err
+		}
 		if err := q.RevokeAllServiceAccess(ctx, repository.RevokeAllServiceAccessParams{
 			OrganizationID: input.OrganizationID,
 			UserID:         input.UserID,
@@ -130,6 +144,9 @@ func (s *serviceAccessService) RevokeAllAccess(ctx context.Context, input Revoke
 				UserID:         input.UserID,
 			})
 	}); err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			return service.ErrNotFound
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "revoke all service access failed")
 		s.log.ErrorContext(ctx, "revoke all service access failed", "error", err)
@@ -141,6 +158,10 @@ func (s *serviceAccessService) RevokeAllAccess(ctx context.Context, input Revoke
 func (s *serviceAccessService) ListAccessByOrgUser(ctx context.Context, input ListAccessByOrgUserInput) (ListAccessOutput, error) {
 	ctx, span := tracer.Start(ctx, "ServiceAccessService.ListAccessByOrgUser")
 	defer span.End()
+
+	if err := s.requireOrgAdmin(ctx, input.OrganizationID, input.RequestedBy); err != nil {
+		return ListAccessOutput{}, err
+	}
 
 	rows, err := s.repo.ListServiceAccessByOrgUser(ctx, repository.ListServiceAccessByOrgUserParams{
 		OrganizationID: input.OrganizationID,
@@ -160,6 +181,10 @@ func (s *serviceAccessService) ListAccessByOrg(ctx context.Context, input ListAc
 	ctx, span := tracer.Start(ctx, "ServiceAccessService.ListAccessByOrg")
 	defer span.End()
 
+	if err := s.requireOrgAdmin(ctx, input.OrganizationID, input.RequestedBy); err != nil {
+		return ListAccessOutput{}, err
+	}
+
 	rows, err := s.repo.ListServiceAccessByOrg(ctx, input.OrganizationID)
 	if err != nil {
 		span.RecordError(err)
@@ -174,9 +199,6 @@ func (s *serviceAccessService) ListAccessByOrg(ctx context.Context, input ListAc
 // IsServiceAllowed checks whether a user can access a service within an organization.
 // Owner/admin members are always allowed (implicit access). Other members need
 // an explicit row in organization_service_access.
-//
-// TODO: This method will be exposed via gRPC for cross-service calls.
-// For now it is called directly within identity for testing purposes.
 func (s *serviceAccessService) IsServiceAllowed(ctx context.Context, organizationID, userID uuid.UUID, serviceName string) (bool, error) {
 	ctx, span := tracer.Start(ctx, "ServiceAccessService.IsServiceAllowed")
 	defer span.End()
@@ -187,7 +209,7 @@ func (s *serviceAccessService) IsServiceAllowed(ctx context.Context, organizatio
 		OrganizationID: organizationID,
 	})
 	if err != nil {
-		if err.Error() == "no rows" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
 		span.RecordError(err)
@@ -213,6 +235,34 @@ func (s *serviceAccessService) IsServiceAllowed(ctx context.Context, organizatio
 	}
 
 	return allowed, nil
+}
+
+func (s *serviceAccessService) requireOrgAdmin(ctx context.Context, organizationID, userID uuid.UUID) error {
+	return requireOrgAdminWith(ctx, s.repo, organizationID, userID)
+}
+
+func requireOrgAdminWith(ctx context.Context, q repository.Querier, organizationID, userID uuid.UUID) error {
+	member, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+		UserID: userID, OrganizationID: organizationID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return service.ErrNotFound
+		}
+		return service.ErrInternal
+	}
+	if member.Role != constant.RoleOwner && member.Role != constant.RoleAdmin {
+		return service.ErrForbidden
+	}
+	return nil
+}
+
+func lockOrganization(ctx context.Context, q repository.Querier, organizationID uuid.UUID) error {
+	status, err := q.GetOrganizationStatusForUpdate(ctx, organizationID)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && status.DeletedAt.Valid {
+		return service.ErrNotFound
+	}
+	return err
 }
 
 func toListOutput(rows []repository.OrganizationServiceAccess) ListAccessOutput {

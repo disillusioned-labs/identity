@@ -36,6 +36,8 @@ const (
 type AuthService interface {
 	Register(ctx context.Context, input RegisterInput) (RegisterOutput, error)
 	Login(ctx context.Context, input LoginInput) (LoginOutput, error)
+	RequestPasswordRecovery(ctx context.Context, input RequestPasswordRecoveryInput) (RequestPasswordRecoveryOutput, error)
+	ResetPassword(ctx context.Context, input ResetPasswordInput) (ResetPasswordOutput, error)
 	Me(ctx context.Context, input MeInput) (MeOutput, error)
 	Refresh(ctx context.Context, input RefreshInput) (RefreshOutput, error)
 	Logout(ctx context.Context, input LogoutInput) (LogoutOutput, error)
@@ -49,17 +51,19 @@ type authService struct {
 	accessTokenTTL  time.Duration
 	refreshTokenTTL time.Duration
 	issuer          string
+	recoveryURL     string
 	revocations     *RevocationStore
 	log             *slog.Logger
 }
 
-func NewAuthService(repo repository.Store, masterKey []byte, accessTokenTTL time.Duration, refreshTokenTTL time.Duration, issuer string, revocations *RevocationStore, log *slog.Logger) AuthService {
+func NewAuthService(repo repository.Store, masterKey []byte, accessTokenTTL time.Duration, refreshTokenTTL time.Duration, issuer, recoveryURL string, revocations *RevocationStore, log *slog.Logger) AuthService {
 	return &authService{
 		repo:            repo,
 		masterKey:       masterKey,
 		accessTokenTTL:  accessTokenTTL,
 		refreshTokenTTL: refreshTokenTTL,
 		issuer:          issuer,
+		recoveryURL:     recoveryURL,
 		revocations:     revocations,
 		log:             log,
 	}
@@ -68,6 +72,9 @@ func NewAuthService(repo repository.Store, masterKey []byte, accessTokenTTL time
 func (s *authService) Register(ctx context.Context, input RegisterInput) (RegisterOutput, error) {
 	ctx, span := tracer.Start(ctx, "AuthService.Register")
 	defer span.End()
+	if len([]byte(input.Password)) > 72 {
+		return RegisterOutput{}, ErrInvalidPassword
+	}
 
 	_, err := s.repo.GetUserByEmail(ctx, input.Email)
 	if err == nil {
@@ -281,6 +288,16 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 	var tokens tokens
 
 	err = s.repo.ExecTx(ctx, func(querier repository.Querier) error {
+		// Recheck the password under the same row lock recovery uses, so a
+		// login that raced a reset cannot mint a fresh session from an old hash.
+		currentPassword, err := querier.GetUserPasswordByIDForUpdate(ctx, user.ID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && currentPassword != user.Password) {
+			return service.ErrUnauthenticated
+		}
+		if err != nil {
+			return err
+		}
+
 		if user.LastActiveOrganizationID == nil || *user.LastActiveOrganizationID != active.OrganizationID {
 			if _, err := querier.SetLastActiveOrganization(ctx, repository.SetLastActiveOrganizationParams{
 				ID:                       user.ID,
@@ -322,6 +339,11 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, service.ErrUnauthenticated) {
+			span.SetStatus(codes.Error, "credentials changed during login")
+			s.emitLoginFailed(ctx, user.ID, "password_changed", input)
+			return LoginOutput{}, service.ErrUnauthenticated
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "login transaction failed")
 		s.log.ErrorContext(ctx, "login transaction failed", "error", err, "user_id", user.ID, "organization_id", active.OrganizationID)
@@ -335,10 +357,11 @@ func (s *authService) Login(ctx context.Context, input LoginInput) (LoginOutput,
 			Email: user.Email,
 		},
 		Organization: OrganizationOutput{
-			ID:   active.OrganizationID,
-			Name: active.Name,
-			Type: active.Type,
-			Role: active.Role,
+			ID:       active.OrganizationID,
+			Name:     active.Name,
+			Type:     active.Type,
+			Role:     active.Role,
+			IsFrozen: active.FrozenAt.Valid,
 		},
 		Tokens: TokensOutput(tokens),
 	}, nil
@@ -374,10 +397,11 @@ func (s *authService) Me(ctx context.Context, input MeInput) (MeOutput, error) {
 	var organizationOutput []MeOrganizationOutput
 	for _, organizationRow := range listUserOrganization {
 		organizationOutput = append(organizationOutput, MeOrganizationOutput{
-			ID:   organizationRow.OrganizationID,
-			Name: organizationRow.Name,
-			Type: organizationRow.Type,
-			Role: organizationRow.Role,
+			ID:       organizationRow.OrganizationID,
+			Name:     organizationRow.Name,
+			Type:     organizationRow.Type,
+			Role:     organizationRow.Role,
+			IsFrozen: organizationRow.FrozenAt.Valid,
 		})
 	}
 
@@ -391,7 +415,7 @@ func (s *authService) Me(ctx context.Context, input MeInput) (MeOutput, error) {
 			Name:  user.Name,
 			Email: user.Email,
 		},
-		ActiveOrganizationId: user.LastActiveOrganizationID,
+		ActiveOrganizationID: user.LastActiveOrganizationID,
 		Organizations:        organizationOutput,
 	}, nil
 }

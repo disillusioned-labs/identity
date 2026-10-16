@@ -7,6 +7,8 @@ func (h *OrganizationHandler) ProtectedRoutes(r chi.Router) {
 	r.Post("/", h.createOrganization)
 	r.Get("/{id}", h.getOrganization)
 	r.Patch("/{id}", h.updateOrganization)
+	r.Put("/{id}/freeze", h.freezeOrganization)
+	r.Delete("/{id}/freeze", h.unfreezeOrganization)
 	r.Delete("/{id}", h.deleteOrganization)
 	r.Post("/{id}/transfer", h.transferOrganization)
 }

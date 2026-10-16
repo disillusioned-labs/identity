@@ -14,6 +14,7 @@ import (
 type Querier interface {
 	AcceptInvitation(ctx context.Context, arg AcceptInvitationParams) (int64, error)
 	ClaimPendingOutboxEvents(ctx context.Context, arg ClaimPendingOutboxEventsParams) ([]OutboxEvent, error)
+	ConsumePasswordRecoveryToken(ctx context.Context, userID uuid.UUID) (int64, error)
 	CountActiveOrganizationMembers(ctx context.Context, organizationID uuid.UUID) (int64, error)
 	CountActiveOrganizationOwners(ctx context.Context, organizationID uuid.UUID) (int64, error)
 	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (OrganizationInvitation, error)
@@ -32,12 +33,18 @@ type Querier interface {
 	GetOrganizationByID(ctx context.Context, id uuid.UUID) (GetOrganizationByIDRow, error)
 	GetOrganizationInvitation(ctx context.Context, id uuid.UUID) (OrganizationInvitation, error)
 	GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error)
+	GetOrganizationStatusForShare(ctx context.Context, id uuid.UUID) (GetOrganizationStatusForShareRow, error)
+	GetOrganizationStatusForUpdate(ctx context.Context, id uuid.UUID) (GetOrganizationStatusForUpdateRow, error)
+	GetPasswordRecoveryTokenByHash(ctx context.Context, tokenHash string) (GetPasswordRecoveryTokenByHashRow, error)
 	GetPendingOrganizationInvitation(ctx context.Context, arg GetPendingOrganizationInvitationParams) (OrganizationInvitation, error)
+	GetRecoveryUserByEmail(ctx context.Context, email string) (GetRecoveryUserByEmailRow, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (GetRefreshTokenByHashRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error)
 	GetUserOrganization(ctx context.Context, arg GetUserOrganizationParams) (GetUserOrganizationRow, error)
 	GetUserOrganizationByEmail(ctx context.Context, arg GetUserOrganizationByEmailParams) (GetUserOrganizationByEmailRow, error)
+	GetUserOrganizationForUpdate(ctx context.Context, arg GetUserOrganizationForUpdateParams) (GetUserOrganizationForUpdateRow, error)
+	GetUserPasswordByIDForUpdate(ctx context.Context, id uuid.UUID) (string, error)
 	GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]GetUsersByIDsRow, error)
 	GetUsersByOrganization(ctx context.Context, arg GetUsersByOrganizationParams) ([]GetUsersByOrganizationRow, error)
 	GrantServiceAccess(ctx context.Context, arg GrantServiceAccessParams) error
@@ -70,10 +77,13 @@ type Querier interface {
 	RevokeUserDevice(ctx context.Context, arg RevokeUserDeviceParams) (RevokeUserDeviceRow, error)
 	RotateSigningKey(ctx context.Context) error
 	SetLastActiveOrganization(ctx context.Context, arg SetLastActiveOrganizationParams) (int64, error)
+	SetOrganizationFrozen(ctx context.Context, arg SetOrganizationFrozenParams) (int64, error)
 	SoftDeleteOrganization(ctx context.Context, id uuid.UUID) (int64, error)
 	SoftDeleteOrganizationMember(ctx context.Context, arg SoftDeleteOrganizationMemberParams) (int64, error)
 	UpdateOrganization(ctx context.Context, arg UpdateOrganizationParams) (UpdateOrganizationRow, error)
 	UpdateOrganizationMemberRole(ctx context.Context, arg UpdateOrganizationMemberRoleParams) (int64, error)
+	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (int64, error)
+	UpsertPasswordRecoveryToken(ctx context.Context, arg UpsertPasswordRecoveryTokenParams) (UpsertPasswordRecoveryTokenRow, error)
 	// Re-registering an active token refreshes its platform/app metadata; a token
 	// that was revoked keeps its old row (the partial index only conflicts on
 	// active rows) and gets a fresh row instead.

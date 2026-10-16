@@ -75,6 +75,11 @@ func (h *ServiceAccessHandler) revokeAccess(w http.ResponseWriter, r *http.Reque
 	defer span.End()
 	r = r.WithContext(ctx)
 
+	userID, ok := userIDFromClaims(w, r, span)
+	if !ok {
+		return
+	}
+
 	organizationID, ok := parseOrganizationID(w, r, span)
 	if !ok {
 		return
@@ -95,6 +100,7 @@ func (h *ServiceAccessHandler) revokeAccess(w http.ResponseWriter, r *http.Reque
 		OrganizationID: organizationID,
 		UserID:         targetUserID,
 		ServiceName:    req.ServiceName,
+		RevokedBy:      userID,
 	}); err != nil {
 		span.SetStatus(codes.Error, "revoke access failed")
 		handler.WriteServiceError(w, r, h.log, err)
@@ -109,6 +115,11 @@ func (h *ServiceAccessHandler) listAccessByOrgUser(w http.ResponseWriter, r *htt
 	defer span.End()
 	r = r.WithContext(ctx)
 
+	userID, ok := userIDFromClaims(w, r, span)
+	if !ok {
+		return
+	}
+
 	organizationID, ok := parseOrganizationID(w, r, span)
 	if !ok {
 		return
@@ -122,6 +133,7 @@ func (h *ServiceAccessHandler) listAccessByOrgUser(w http.ResponseWriter, r *htt
 	output, err := h.service.ListAccessByOrgUser(r.Context(), serviceservice.ListAccessByOrgUserInput{
 		OrganizationID: organizationID,
 		UserID:         targetUserID,
+		RequestedBy:    userID,
 	})
 	if err != nil {
 		span.SetStatus(codes.Error, "list access failed")
@@ -137,6 +149,11 @@ func (h *ServiceAccessHandler) listAccessByOrg(w http.ResponseWriter, r *http.Re
 	defer span.End()
 	r = r.WithContext(ctx)
 
+	userID, ok := userIDFromClaims(w, r, span)
+	if !ok {
+		return
+	}
+
 	organizationID, ok := parseOrganizationID(w, r, span)
 	if !ok {
 		return
@@ -144,6 +161,7 @@ func (h *ServiceAccessHandler) listAccessByOrg(w http.ResponseWriter, r *http.Re
 
 	output, err := h.service.ListAccessByOrg(r.Context(), serviceservice.ListAccessByOrgInput{
 		OrganizationID: organizationID,
+		RequestedBy:    userID,
 	})
 	if err != nil {
 		span.SetStatus(codes.Error, "list access failed")

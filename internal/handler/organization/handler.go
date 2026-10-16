@@ -74,6 +74,7 @@ func (h *OrganizationHandler) createOrganization(w http.ResponseWriter, r *http.
 	output, err := h.service.CreateOrganization(ctx, organizationservice.CreateInput{
 		UserID: userID,
 		Name:   strings.TrimSpace(req.Name),
+		Type:   req.Type,
 	})
 	if err != nil {
 		span.SetStatus(codes.Error, "create organization failed")
@@ -159,6 +160,50 @@ func (h *OrganizationHandler) updateOrganization(w http.ResponseWriter, r *http.
 	span.SetAttributes(attribute.String("organization.id", organizationID.String()), attribute.String("user.id", userID.String()))
 
 	handler.OK(w, http.StatusOK, toUpdateResponse(output))
+}
+
+func (h *OrganizationHandler) freezeOrganization(w http.ResponseWriter, r *http.Request) {
+	h.setOrganizationFrozen(w, r, true)
+}
+
+func (h *OrganizationHandler) unfreezeOrganization(w http.ResponseWriter, r *http.Request) {
+	h.setOrganizationFrozen(w, r, false)
+}
+
+func (h *OrganizationHandler) setOrganizationFrozen(w http.ResponseWriter, r *http.Request, frozen bool) {
+	ctx, span := tracer.Start(r.Context(), "OrganizationHandler.setOrganizationFrozen")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	userID, ok := userIDFromClaims(w, r)
+	if !ok {
+		span.SetStatus(codes.Error, "get user id from claims failed")
+		return
+	}
+	organizationID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid organization id")
+		handler.WriteError(w, http.StatusBadRequest, handler.CodeBadRequest, "invalid organization id")
+		return
+	}
+
+	if err := h.service.SetFrozen(ctx, organizationservice.SetFrozenInput{
+		UserID:         userID,
+		OrganizationID: organizationID,
+		Frozen:         frozen,
+	}); err != nil {
+		span.SetStatus(codes.Error, "set organization frozen status failed")
+		handler.WriteServiceError(w, r, h.log, err)
+		return
+	}
+
+	span.SetAttributes(
+		attribute.String("organization.id", organizationID.String()),
+		attribute.Bool("organization.frozen", frozen),
+		attribute.String("user.id", userID.String()),
+	)
+	handler.OK(w, http.StatusOK, FreezeResponse{IsFrozen: frozen})
 }
 
 func (h *OrganizationHandler) deleteOrganization(w http.ResponseWriter, r *http.Request) {

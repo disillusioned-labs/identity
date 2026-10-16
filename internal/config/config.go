@@ -19,11 +19,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
-	platformconfig "github.com/disillusioned-labs/platform/config"
 	"github.com/spf13/viper"
+
+	platformconfig "github.com/disillusioned-labs/platform/config"
 )
 
 // Config is the root of all application settings, one field per subsystem.
@@ -69,6 +71,10 @@ type AuthConfig struct {
 	RefreshTokenTTL time.Duration `mapstructure:"refresh_token_ttl"`
 	// Issuer is the "iss" claim stamped on every JWT.
 	Issuer string `mapstructure:"issuer"`
+	// RecoveryURL is the public HTTPS route that accepts a one-time token.
+	RecoveryURL string `mapstructure:"recovery_url"`
+	// InvitationURL is the public HTTPS route prefix; the one-time invitation token is appended as a path segment.
+	InvitationURL string `mapstructure:"invitation_url"`
 }
 
 // SigningConfig controls the scheduled signing-key lifecycle run by the
@@ -208,6 +214,9 @@ func (c *Config) validate() error {
 	if err := platformconfig.ValidateRedis(&c.Redis); err != nil {
 		errs = append(errs, err)
 	}
+	if c.Service.Env == platformconfig.EnvProduction && c.Redis.Mode != platformconfig.RedisModeRequired {
+		fail("redis.mode must be required in production to enforce token revocation")
+	}
 
 	if err := platformconfig.ValidateCache(&c.Cache); err != nil {
 		errs = append(errs, err)
@@ -261,8 +270,29 @@ func (c *Config) validate() error {
 
 	if c.Auth.Issuer == "" {
 		fail("auth.issuer must not be empty")
+	}
 
-		// Signing validation.
+	validatePublicURL := func(key, raw string) {
+		if raw == "" {
+			fail("%s must not be empty", key)
+			return
+		}
+		u, err := url.Parse(raw)
+		if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			fail("%s must be an absolute URL without credentials, query, or fragment", key)
+			return
+		}
+		isHTTPS := u.Scheme == "https"
+		isLoopbackDevelopmentHTTP := u.Scheme == "http" && c.Service.Env == platformconfig.EnvDevelopment && isLoopbackHost(u.Hostname())
+		if !isHTTPS && !isLoopbackDevelopmentHTTP {
+			fail("%s must use HTTPS (HTTP is allowed only for a loopback development URL)", key)
+		}
+	}
+	validatePublicURL("auth.recovery_url", c.Auth.RecoveryURL)
+	validatePublicURL("auth.invitation_url", c.Auth.InvitationURL)
+
+	// Signing settings are required only when scheduled rotation is enabled.
+	if c.Signing.RotationEnabled {
 		if c.Signing.RotationInterval <= 0 {
 			fail("signing.rotation_interval must be > 0, got %s", c.Signing.RotationInterval)
 		}
@@ -292,6 +322,10 @@ func (c *Config) validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 // setDefaults registers every key with its production-safe value; Viper's
@@ -387,6 +421,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.access_token_ttl", "15m")
 	v.SetDefault("auth.refresh_token_ttl", "168h") // 7 days
 	v.SetDefault("auth.issuer", "identity")
+	v.SetDefault("auth.recovery_url", "http://localhost:3000/account/recovery")
+	v.SetDefault("auth.invitation_url", "http://localhost:3000/invite")
 
 	// Scheduled rotation is opt-in; the delays below are safe defaults once
 	// enabled (retirement >= access-token TTL).

@@ -5,18 +5,20 @@ import (
 )
 
 type OrganizationResponse struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Role string `json:"role"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Role     string `json:"role"`
+	IsFrozen bool   `json:"is_frozen"`
 }
 
 func newOrganizationResponse(organization organizationservice.OrganizationOutput) OrganizationResponse {
 	return OrganizationResponse{
-		ID:   organization.ID.String(),
-		Name: organization.Name,
-		Type: organization.Type,
-		Role: organization.Role,
+		ID:       organization.ID.String(),
+		Name:     organization.Name,
+		Type:     organization.Type,
+		Role:     organization.Role,
+		IsFrozen: organization.IsFrozen,
 	}
 }
 
@@ -60,13 +62,18 @@ type UpdateResponse struct {
 	Organization OrganizationResponse `json:"organization"`
 }
 
+// FreezeResponse reports the organization freeze state after a transition.
+type FreezeResponse struct {
+	IsFrozen bool `json:"is_frozen"`
+}
+
 func toUpdateResponse(output organizationservice.UpdateOutput) UpdateResponse {
 	return UpdateResponse{
 		Organization: newOrganizationResponse(output.Organization),
 	}
 }
 
-func toDeleteResponse(output organizationservice.DeleteOutput) struct{} {
+func toDeleteResponse(_ organizationservice.DeleteOutput) struct{} {
 	return struct{}{}
 }
 
