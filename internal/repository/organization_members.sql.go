@@ -81,6 +81,41 @@ func (q *Queries) CreateOrganizationMember(ctx context.Context, arg CreateOrgani
 	return i, err
 }
 
+const getActiveOrganizationAdmin = `-- name: GetActiveOrganizationAdmin :one
+SELECT user_id
+FROM organization_members
+WHERE organization_id = $1
+  AND deleted_at IS NULL
+  AND role IN ('owner', 'admin')
+ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, joined_at ASC
+LIMIT 1
+`
+
+func (q *Queries) GetActiveOrganizationAdmin(ctx context.Context, organizationID uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getActiveOrganizationAdmin, organizationID)
+	var user_id uuid.UUID
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
+const getOrganizationMemberDeletedAt = `-- name: GetOrganizationMemberDeletedAt :one
+SELECT deleted_at
+FROM organization_members
+WHERE organization_id = $1 AND user_id = $2
+`
+
+type GetOrganizationMemberDeletedAtParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetOrganizationMemberDeletedAt(ctx context.Context, arg GetOrganizationMemberDeletedAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getOrganizationMemberDeletedAt, arg.OrganizationID, arg.UserID)
+	var deleted_at pgtype.Timestamptz
+	err := row.Scan(&deleted_at)
+	return deleted_at, err
+}
+
 const getUserOrganization = `-- name: GetUserOrganization :one
 SELECT
     m.organization_id,
@@ -345,6 +380,26 @@ func (q *Queries) ListUserOrganizations(ctx context.Context, userID uuid.UUID) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const reactivateOrganizationMember = `-- name: ReactivateOrganizationMember :execrows
+UPDATE organization_members
+SET role = $3, joined_at = now(), deleted_at = NULL
+WHERE organization_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+`
+
+type ReactivateOrganizationMemberParams struct {
+	OrganizationID uuid.UUID `json:"organization_id"`
+	UserID         uuid.UUID `json:"user_id"`
+	Role           string    `json:"role"`
+}
+
+func (q *Queries) ReactivateOrganizationMember(ctx context.Context, arg ReactivateOrganizationMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reactivateOrganizationMember, arg.OrganizationID, arg.UserID, arg.Role)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const softDeleteOrganizationMember = `-- name: SoftDeleteOrganizationMember :execrows

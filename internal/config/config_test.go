@@ -234,6 +234,10 @@ func TestValidateRejectsBadValues(t *testing.T) {
 		{"endpoint without scheme", func(c *Config) { c.OTel.Endpoint = "localhost:4317" }, "scheme"},
 		{"zero metric interval", func(c *Config) { c.OTel.MetricExportIntervalMillis = 0 }, "otel.metric_export_interval"},
 		{"zero ratelimit requests", func(c *Config) { c.RateLimit.Requests = 0 }, "ratelimit.requests"},
+		{"malformed expense caller token", func(c *Config) { c.GRPCAuth.ExpenseServiceTokens = "bad" }, "grpc_auth.expense_service_tokens"},
+		{"missing expense client token", func(c *Config) { c.Expense.GRPCServiceToken = "" }, "expense.grpc_service_token"},
+		{"gRPC server TLS disabled outside development", func(c *Config) { c.GRPC.TLS.Enabled = false }, "grpc.tls.enabled"},
+		{"gRPC client TLS disabled outside development", func(c *Config) { c.GRPCClient.TLS.Enabled = false }, "grpc_client.tls.enabled"},
 	}
 
 	for _, tt := range tests {
@@ -417,15 +421,23 @@ func validConfig() *Config {
 			RecoveryURL:     "https://app.example.test/account/recovery",
 			InvitationURL:   "https://app.example.test/invite",
 		},
-		GRPCClient: platformconfig.GRPCClientConfig{
-			Timeout: 2 * time.Second, MaxRecvMsgSize: 4194304, MaxSendMsgSize: 4194304,
+		Expense: ExpenseClientConfig{
+			GRPCTarget:       "localhost:9091",
+			GRPCServiceToken: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		},
-		Expense: ExpenseClientConfig{GRPCTarget: "localhost:9091"},
+		GRPCAuth: GRPCAuthConfig{
+			ExpenseServiceTokens: "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		},
 		// GRPC is the internal gRPC server surface (identity.v1), validated
 		// unconditionally: a deployment that serves it must have a real port.
 		GRPC: platformconfig.GRPCConfig{
 			ServerPort: 9090, MaxRecvMsgSize: 4194304, MaxSendMsgSize: 4194304,
 			MaxHeaderSize: 8192, UnaryTimeout: 10 * time.Second,
+			TLS: platformconfig.GRPCTLSConfig{Enabled: true, CertFile: "server.crt", KeyFile: "server.key"},
+		},
+		GRPCClient: platformconfig.GRPCClientConfig{
+			Timeout: 2 * time.Second, MaxRecvMsgSize: 4194304, MaxSendMsgSize: 4194304,
+			TLS: platformconfig.GRPCTLSConfig{Enabled: true},
 		},
 	}
 }

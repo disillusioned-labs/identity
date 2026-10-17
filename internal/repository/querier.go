@@ -25,6 +25,7 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	DeletePublishedOutboxEvents(ctx context.Context) (int64, error)
 	ExpireInvitation(ctx context.Context, id uuid.UUID) (int64, error)
+	GetActiveOrganizationAdmin(ctx context.Context, organizationID uuid.UUID) (uuid.UUID, error)
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
 	GetActiveSigningKeyAge(ctx context.Context) (GetActiveSigningKeyAgeRow, error)
 	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (GetInvitationByTokenHashRow, error)
@@ -33,6 +34,7 @@ type Querier interface {
 	GetOrganizationByID(ctx context.Context, id uuid.UUID) (GetOrganizationByIDRow, error)
 	GetOrganizationInvitation(ctx context.Context, id uuid.UUID) (OrganizationInvitation, error)
 	GetOrganizationMember(ctx context.Context, arg GetOrganizationMemberParams) (GetOrganizationMemberRow, error)
+	GetOrganizationMemberDeletedAt(ctx context.Context, arg GetOrganizationMemberDeletedAtParams) (pgtype.Timestamptz, error)
 	GetOrganizationStatusForShare(ctx context.Context, id uuid.UUID) (GetOrganizationStatusForShareRow, error)
 	GetOrganizationStatusForUpdate(ctx context.Context, id uuid.UUID) (GetOrganizationStatusForUpdateRow, error)
 	GetPasswordRecoveryTokenByHash(ctx context.Context, tokenHash string) (GetPasswordRecoveryTokenByHashRow, error)
@@ -64,6 +66,7 @@ type Querier interface {
 	ListUserOrganizations(ctx context.Context, userID uuid.UUID) ([]ListUserOrganizationsRow, error)
 	MarkOutboxEventFailed(ctx context.Context, arg MarkOutboxEventFailedParams) error
 	MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error
+	ReactivateOrganizationMember(ctx context.Context, arg ReactivateOrganizationMemberParams) (int64, error)
 	ReleaseOutboxEventLock(ctx context.Context, id uuid.UUID) error
 	RetireExpiredSigningKeys(ctx context.Context, deactivatedAt pgtype.Timestamptz) (int64, error)
 	RevokeAllServiceAccess(ctx context.Context, arg RevokeAllServiceAccessParams) error

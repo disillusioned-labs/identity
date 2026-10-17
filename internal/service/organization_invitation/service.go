@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/disillusioned-labs/identity/internal/constant"
+	"github.com/disillusioned-labs/identity/internal/contract"
 	"github.com/disillusioned-labs/identity/internal/repository"
 	"github.com/disillusioned-labs/identity/internal/service"
 	notificationcontract "github.com/disillusioned-labs/platform/contract/notification"
@@ -47,13 +48,15 @@ type OrganizationInvitationService interface {
 
 type organizationInvitationService struct {
 	repo          repository.Store
+	expense       contract.ExpenseClient
 	invitationURL string
 	log           *slog.Logger
 }
 
-func NewOrganizationInvitationService(repo repository.Store, invitationURL string, log *slog.Logger) OrganizationInvitationService {
+func NewOrganizationInvitationService(repo repository.Store, expense contract.ExpenseClient, invitationURL string, log *slog.Logger) OrganizationInvitationService {
 	return &organizationInvitationService{
 		repo:          repo,
+		expense:       expense,
 		invitationURL: invitationURL,
 		log:           log,
 	}
@@ -551,13 +554,66 @@ func (s *organizationInvitationService) acceptInvitation(
 	}
 
 	err = s.repo.ExecTx(ctx, func(q repository.Querier) error {
-		_, err := q.CreateOrganizationMember(ctx, repository.CreateOrganizationMemberParams{
-			OrganizationID: organizationID,
-			UserID:         userID,
-			Role:           invitationRole,
-		})
+		orgStatus, err := q.GetOrganizationStatusForUpdate(ctx, organizationID)
 		if err != nil {
 			return err
+		}
+		if orgStatus.DeletedAt.Valid {
+			return service.ErrNotFound
+		}
+		if orgStatus.FrozenAt.Valid {
+			return service.ErrForbidden
+		}
+
+		deletedAt, err := q.GetOrganizationMemberDeletedAt(ctx, repository.GetOrganizationMemberDeletedAtParams{
+			OrganizationID: organizationID,
+			UserID:         userID,
+		})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			_, err = q.CreateOrganizationMember(ctx, repository.CreateOrganizationMemberParams{
+				OrganizationID: organizationID,
+				UserID:         userID,
+				Role:           invitationRole,
+			})
+			if err != nil {
+				return err
+			}
+		case err != nil:
+			return err
+		case !deletedAt.Valid:
+			return service.ErrConflict
+		default:
+			actorID, err := q.GetActiveOrganizationAdmin(ctx, organizationID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return service.ErrForbidden
+			}
+			if err != nil {
+				return err
+			}
+			if s.expense == nil {
+				return service.ErrExpenseServiceDown
+			}
+			cleared, err := s.expense.ClearRejoinedMemberProjectAccess(ctx, organizationID, userID, actorID)
+			if err != nil {
+				var domainErr *service.Error
+				if errors.As(err, &domainErr) {
+					return err
+				}
+				return service.ErrExpenseServiceDown
+			}
+			span.SetAttributes(attribute.Int64("project_placements.cleared", cleared))
+			rows, err := q.ReactivateOrganizationMember(ctx, repository.ReactivateOrganizationMemberParams{
+				OrganizationID: organizationID,
+				UserID:         userID,
+				Role:           invitationRole,
+			})
+			if err != nil {
+				return err
+			}
+			if rows == 0 {
+				return service.ErrConflict
+			}
 		}
 
 		rows, err := q.AcceptInvitation(ctx, repository.AcceptInvitationParams{
@@ -600,7 +656,7 @@ func (s *organizationInvitationService) acceptInvitation(
 			return err
 		}
 
-		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+		organization, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
 			UserID:         invitation.InvitedBy,
 			OrganizationID: organizationID,
 		})
@@ -614,7 +670,7 @@ func (s *organizationInvitationService) acceptInvitation(
 		}
 
 		notificationPayload, err := json.Marshal(map[string]string{
-			"organization_name": org.OrganizationName,
+			"organization_name": organization.OrganizationName,
 			"invitee_name":      acceptingUser.Name,
 			"inviter_name":      inviter.Name,
 		})
@@ -656,6 +712,10 @@ func (s *organizationInvitationService) acceptInvitation(
 		if errors.Is(err, service.ErrConflict) {
 			span.SetStatus(codes.Error, "invitation acceptance conflict")
 			return AcceptInvitationOutput{}, service.ErrConflict
+		}
+		var domainErr *service.Error
+		if errors.As(err, &domainErr) {
+			return AcceptInvitationOutput{}, domainErr
 		}
 
 		if service.IsUniqueViolation(err) {

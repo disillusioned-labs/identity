@@ -513,15 +513,7 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 	if hasRules {
 		if input.ReassignRulesTo == nil {
 			span.SetStatus(codes.Error, "target member is still an approver")
-			details := make([]map[string]any, 0, len(rules))
-			for _, r := range rules {
-				ref := map[string]any{"id": r.ID, "step": r.Step}
-				if r.ProjectID != nil {
-					ref["project_id"] = *r.ProjectID
-				}
-				details = append(details, ref)
-			}
-			return RemoveOrganizationMemberOutput{}, service.ErrApproverStillAssigned.WithDetails(map[string]any{"rules": details})
+			return RemoveOrganizationMemberOutput{}, approverStillAssigned(rules)
 		}
 		if *input.ReassignRulesTo == input.TargetUserID {
 			span.SetStatus(codes.Error, "reassign target equals removed member")
@@ -547,6 +539,17 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 		if err := lockOrganization(ctx, q, input.OrganizationID); err != nil {
 			return err
 		}
+		// Recheck authority and the cross-database invariant after the
+		// exclusive organization lock drains all Expense write leases.
+		current, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
+			UserID: input.UserID, OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			return err
+		}
+		if current.Role != constant.RoleOwner && current.Role != constant.RoleAdmin {
+			return service.ErrForbidden
+		}
 
 		org, err := q.GetUserOrganization(ctx, repository.GetUserOrganizationParams{
 			UserID:         input.TargetUserID,
@@ -554,6 +557,35 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 		})
 		if err != nil {
 			return err
+		}
+		if current.Role == constant.RoleAdmin && org.Role == constant.RoleOwner {
+			return service.ErrForbidden
+		}
+		if org.Role == constant.RoleOwner {
+			ownerCount, err := q.CountActiveOrganizationOwners(ctx, input.OrganizationID)
+			if err != nil {
+				return err
+			}
+			if ownerCount <= 1 {
+				memberCount, err := q.CountActiveOrganizationMembers(ctx, input.OrganizationID)
+				if err != nil {
+					return err
+				}
+				if memberCount > 1 {
+					return service.ErrLastOwnerCannotLeave
+				}
+			}
+		}
+
+		// CheckApproverAssignments is read-only and does not acquire a write
+		// lease. Holding the organization lock here keeps new Expense rules
+		// from appearing between this check and the membership commit.
+		hasRules, rules, err = s.expense.CheckApproverAssignments(ctx, input.OrganizationID, input.TargetUserID)
+		if err != nil {
+			return service.ErrExpenseServiceDown
+		}
+		if hasRules {
+			return approverStillAssigned(rules)
 		}
 
 		targetUser, err := q.GetUserByID(ctx, input.TargetUserID)
@@ -650,6 +682,10 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 
 			return RemoveOrganizationMemberOutput{}, service.ErrNotFound
 		}
+		var svcErr *service.Error
+		if errors.As(err, &svcErr) {
+			return RemoveOrganizationMemberOutput{}, svcErr
+		}
 
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "remove organization member failed")
@@ -672,6 +708,18 @@ func (s *organizationMemberService) RemoveOrganizationMember(
 	s.revokeMemberAccess(ctx, input.OrganizationID, input.TargetUserID)
 
 	return RemoveOrganizationMemberOutput{}, nil
+}
+
+func approverStillAssigned(rules []contract.ApproverRuleRef) error {
+	details := make([]map[string]any, 0, len(rules))
+	for _, r := range rules {
+		ref := map[string]any{"id": r.ID, "step": r.Step}
+		if r.ProjectID != nil {
+			ref["project_id"] = *r.ProjectID
+		}
+		details = append(details, ref)
+	}
+	return service.ErrApproverStillAssigned.WithDetails(map[string]any{"rules": details})
 }
 
 func (s *organizationMemberService) LeaveOrganization(

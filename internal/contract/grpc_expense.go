@@ -108,6 +108,27 @@ func (c *grpcExpenseClient) ReassignApproverRules(ctx context.Context, orgID, fr
 	return nil
 }
 
+func (c *grpcExpenseClient) ClearRejoinedMemberProjectAccess(ctx context.Context, orgID, userID, actorID uuid.UUID) (int64, error) {
+	ctx, span := tracer.Start(ctx, "ExpenseClient.ClearRejoinedMemberProjectAccess")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("organization.id", orgID.String()),
+		attribute.String("user.id", userID.String()),
+		attribute.String("actor.id", actorID.String()),
+	)
+	resp, err := c.client.ClearRejoinedMemberProjectAccess(ctx, &expensepb.ClearRejoinedMemberProjectAccessRequest{
+		OrganizationId: orgID.String(),
+		UserId:         userID.String(),
+		ActorId:        actorID.String(),
+	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, "gRPC call failed")
+		return 0, asServiceError(err)
+	}
+	return resp.GetRemoved(), nil
+}
+
 // asServiceError re-maps expense's gRPC codes onto self-describing domain
 // errors; anything unmapped stays a transport error for the caller to wrap.
 func asServiceError(err error) error {
@@ -124,6 +145,8 @@ func asServiceError(err error) error {
 		return service.NewError("INVALID_REASSIGN_TARGET", http.StatusUnprocessableEntity, st.Message())
 	case codes.PermissionDenied:
 		return service.NewError("FORBIDDEN", http.StatusForbidden, st.Message())
+	case codes.FailedPrecondition:
+		return service.NewError("MEMBER_STILL_ACTIVE", http.StatusConflict, st.Message())
 	default:
 		return err
 	}

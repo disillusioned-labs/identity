@@ -39,6 +39,16 @@ func newExpenseClient(_ context.Context, cfg *config.Config, log *slog.Logger) (
 		}
 		opts = append(opts, platformgrpc.WithTLS(tlsConfig))
 	}
+	if cfg.Expense.GRPCServiceToken != "" {
+		credentials, err := platformgrpc.NewServiceTokenCredentials(
+			cfg.Expense.GRPCServiceToken,
+			cfg.GRPCClient.TLS.Enabled,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("configure expense gRPC service credentials: %w", err)
+		}
+		opts = append(opts, platformgrpc.WithPerRPCCredentials(credentials))
+	}
 
 	client, err := platformgrpc.NewClient(cfg.Expense.GRPCTarget, opts...)
 	if err != nil {

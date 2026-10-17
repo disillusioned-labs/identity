@@ -89,6 +89,7 @@ func buildDeps(pool *pgxpool.Pool, rdb *goredis.Client, redisRequired bool, cach
 
 	organizationInvitationService := organizationinvitationservice.NewOrganizationInvitationService(
 		repo,
+		expenseClient,
 		authCfg.InvitationURL,
 		log,
 	)

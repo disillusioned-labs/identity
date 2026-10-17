@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/viper"
 
 	platformconfig "github.com/disillusioned-labs/platform/config"
+	platformgrpc "github.com/disillusioned-labs/platform/grpc"
 )
 
 // Config is the root of all application settings, one field per subsystem.
@@ -45,6 +46,7 @@ type Config struct {
 	Signing   SigningConfig                  `mapstructure:"signing"`
 	// GRPCClient holds the outbound gRPC client knobs shared by every peer.
 	GRPCClient platformconfig.GRPCClientConfig `mapstructure:"grpc_client"`
+	GRPCAuth   GRPCAuthConfig                  `mapstructure:"grpc_auth"`
 	// Expense points at expense's internal gRPC surface (decision D2): the
 	// member-removal use case checks approver assignments there before
 	// committing.
@@ -57,7 +59,35 @@ type Config struct {
 type ExpenseClientConfig struct {
 	// GRPCTarget is expense's gRPC address (expense.v1). Must not be empty:
 	// member removal fail-closes on it.
-	GRPCTarget string `mapstructure:"grpc_target"`
+	GRPCTarget       string `mapstructure:"grpc_target"`
+	GRPCServiceToken string `mapstructure:"grpc_service_token"`
+}
+
+// GRPCAuthConfig contains tokens accepted from inbound service callers.
+type GRPCAuthConfig struct {
+	ExpenseServiceTokens      string `mapstructure:"expense_service_tokens"`
+	NotificationServiceTokens string `mapstructure:"notification_service_tokens"`
+}
+
+func (c GRPCAuthConfig) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("expense_service_tokens", redactServiceTokens(c.ExpenseServiceTokens)),
+		slog.String("notification_service_tokens", redactServiceTokens(c.NotificationServiceTokens)),
+	)
+}
+
+func (c ExpenseClientConfig) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("grpc_target", c.GRPCTarget),
+		slog.String("grpc_service_token", redactServiceTokens(c.GRPCServiceToken)),
+	)
+}
+
+func redactServiceTokens(value string) string {
+	if value == "" {
+		return ""
+	}
+	return "xxxxx"
 }
 
 // AuthConfig holds JWT signing and refresh token settings.
@@ -317,6 +347,32 @@ func (c *Config) validate() error {
 	if err := platformconfig.ValidateGRPCClient(&c.GRPCClient); err != nil {
 		errs = append(errs, err)
 	}
+	if err := platformconfig.ValidateGRPCTransportSecurity(c.Service.Env, &c.GRPC.TLS, &c.GRPCClient.TLS); err != nil {
+		errs = append(errs, err)
+	}
+	requireServiceAuth := c.Service.Env != platformconfig.EnvDevelopment
+	for _, item := range []struct {
+		name     string
+		value    string
+		required bool
+	}{
+		{"grpc_auth.expense_service_tokens", c.GRPCAuth.ExpenseServiceTokens, requireServiceAuth},
+		{"grpc_auth.notification_service_tokens", c.GRPCAuth.NotificationServiceTokens, false},
+	} {
+		tokens, err := platformgrpc.ParseServiceTokens(item.value)
+		if err != nil {
+			fail("%s: %v", item.name, err)
+		} else if item.required && len(tokens) == 0 {
+			fail("%s must contain at least one 32-byte service token outside development", item.name)
+		}
+	}
+	if c.Expense.GRPCServiceToken != "" {
+		if err := platformgrpc.ValidateServiceToken(c.Expense.GRPCServiceToken); err != nil {
+			fail("expense.grpc_service_token: %v", err)
+		}
+	} else if requireServiceAuth {
+		fail("expense.grpc_service_token must be set outside development")
+	}
 	if strings.TrimSpace(c.Expense.GRPCTarget) == "" {
 		fail("expense.grpc_target must not be empty")
 	}
@@ -355,12 +411,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("grpc.tls.key_file", "")
 	v.SetDefault("grpc.tls.server_name", "")
 	v.SetDefault("grpc.tls.mutual_tls", false)
+	v.SetDefault("grpc_auth.expense_service_tokens", "")
+	v.SetDefault("grpc_auth.notification_service_tokens", "")
 
 	// gRPC client (identity → expense, decision D2). Removal is not a hot
 	// path, so the timeout is generous compared to expense's 50ms budget on
 	// its own identity calls - a member removal must not fail just because
 	// expense had one slow query.
 	v.SetDefault("expense.grpc_target", "localhost:9091")
+	v.SetDefault("expense.grpc_service_token", "")
 	v.SetDefault("grpc_client.timeout", "2s")
 	v.SetDefault("grpc_client.max_recv_msg_size", 4194304)
 	v.SetDefault("grpc_client.max_send_msg_size", 4194304)

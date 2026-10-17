@@ -107,7 +107,7 @@ func RunAPI(cfg *config.Config) error {
 	// -------------------------------------------------------------------------
 	// Redis
 	// -------------------------------------------------------------------------
-	rdb, svcCache, closeRedis, err := setupRedis(ctx, cfg, log)
+	rdb, rateLimitRedis, svcCache, closeRedis, err := setupRedis(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -126,6 +126,7 @@ func RunAPI(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("build dependencies: %w", err)
 	}
+	deps.RateLimitRedis = rateLimitRedis
 	srv, err := server.New(cfg, log, deps)
 	if err != nil {
 		return err
@@ -210,18 +211,15 @@ func shutdownCause(signalled bool) string {
 	return "listener failure"
 }
 
-// setupRedis honors redis.mode: absent in disabled mode, fatal in required
-// mode, best-effort in optional mode. The returned cache stays a nil interface
-// (not a typed-nil *cache.Cache) when Redis is unavailable, so the services'
-// nil checks keep working.
+// setupRedis honors redis.mode and gives distributed rate limits a fast-fail client.
 func setupRedis(ctx context.Context, cfg *config.Config, log *slog.Logger) (
-	*goredis.Client, cache.Cache, func(), error,
+	*goredis.Client, *goredis.Client, cache.Cache, func(), error,
 ) {
 	noop := func() {}
 
 	if cfg.Redis.Mode == platformconfig.RedisModeDisabled {
-		log.Info("redis disabled, running without cache")
-		return nil, nil, noop, nil
+		log.Info("redis disabled; using process-local rate limits")
+		return nil, nil, nil, noop, nil
 	}
 
 	client, err := redis.New(ctx, cfg.Redis.Addr,
@@ -230,12 +228,30 @@ func setupRedis(ctx context.Context, cfg *config.Config, log *slog.Logger) (
 	)
 	if err != nil {
 		if cfg.Redis.Mode == platformconfig.RedisModeRequired {
-			return nil, nil, noop, fmt.Errorf("connect redis (required): %w", err)
+			return nil, nil, nil, noop, fmt.Errorf("connect redis (required): %w", err)
 		}
-		log.Warn("redis unreachable, running without cache", "error", err)
-		return nil, nil, noop, nil
+		log.Warn("redis unreachable; using process-local rate limits", "error", err)
+		return nil, nil, nil, noop, nil
 	}
 
 	log.Info("connected to redis", "redis", cfg.Redis)
-	return client, cache.New(client, cfg.Cache.DefaultTTL), func() { _ = client.Close() }, nil
+	var rateLimitClient *goredis.Client
+	if cfg.RateLimit.Enabled {
+		rateLimitClient, err = redis.New(ctx, cfg.Redis.Addr,
+			redis.Password(cfg.Redis.Password),
+			redis.DB(cfg.Redis.DB),
+			redis.RateLimitIO(),
+		)
+		if err != nil {
+			_ = client.Close()
+			return nil, nil, nil, noop, fmt.Errorf("connect redis rate limiter: %w", err)
+		}
+	}
+	closeRedis := func() {
+		if rateLimitClient != nil {
+			_ = rateLimitClient.Close()
+		}
+		_ = client.Close()
+	}
+	return client, rateLimitClient, cache.New(client, cfg.Cache.DefaultTTL), closeRedis, nil
 }

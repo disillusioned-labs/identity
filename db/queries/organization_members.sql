@@ -11,6 +11,25 @@ VALUES ($1, $2, $3)
     role,
     joined_at;
 
+-- name: GetOrganizationMemberDeletedAt :one
+SELECT deleted_at
+FROM organization_members
+WHERE organization_id = $1 AND user_id = $2;
+
+-- name: GetActiveOrganizationAdmin :one
+SELECT user_id
+FROM organization_members
+WHERE organization_id = $1
+  AND deleted_at IS NULL
+  AND role IN ('owner', 'admin')
+ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, joined_at ASC
+LIMIT 1;
+
+-- name: ReactivateOrganizationMember :execrows
+UPDATE organization_members
+SET role = $3, joined_at = now(), deleted_at = NULL
+WHERE organization_id = $1 AND user_id = $2 AND deleted_at IS NOT NULL;
+
 -- name: ListUserOrganizations :many
 SELECT
     m.organization_id,

@@ -4,15 +4,19 @@ package organization
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/disillusioned-labs/identity/db/migrations"
 	"github.com/disillusioned-labs/identity/internal/contract"
 	"github.com/disillusioned-labs/identity/internal/repository"
+	identityservice "github.com/disillusioned-labs/identity/internal/service"
 	organizationmember "github.com/disillusioned-labs/identity/internal/service/organization_member"
 	serviceaccess "github.com/disillusioned-labs/identity/internal/service/service_access"
 	"github.com/disillusioned-labs/platform/postgres"
@@ -90,6 +94,178 @@ func TestExpenseWriteLeaseSerializesAuthorizationChanges(t *testing.T) {
 			return removed
 		}, false, true)
 	})
+}
+
+func TestMemberRemovalRechecksApproverRulesAfterExpenseWriteLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool := newWriteAccessIntegrationPool(t, ctx)
+	store := repository.NewStore(pool)
+	log := slog.New(slog.DiscardHandler)
+	organizations := NewOrganizationService(store, log)
+	fixture := createWriteAccessFixture(t, ctx, pool)
+	expense := &lateApproverAssignments{}
+	members := organizationmember.NewOrganizationMemberService(store, noopRevocationWriter{}, expense, log)
+
+	leaseReady := make(chan error, 1)
+	leaseDone := make(chan error, 1)
+	leaseReleased := make(chan struct{})
+	go func() {
+		leaseDone <- organizations.HoldExpenseWriteAccess(ctx, HoldExpenseWriteAccessInput{
+			OrganizationID: fixture.organizationID, UserID: fixture.ownerID,
+		}, func(HoldExpenseWriteAccessOutput) error {
+			leaseReady <- nil
+			<-leaseReleased
+			return nil
+		})
+	}()
+	if err := receiveWriteAccessError(t, ctx, leaseReady); err != nil {
+		t.Fatalf("acquire write lease: %v", err)
+	}
+
+	removeDone := make(chan error, 1)
+	go func() {
+		_, err := members.RemoveOrganizationMember(ctx, organizationmember.RemoveOrganizationMemberInput{
+			UserID: fixture.ownerID, OrganizationID: fixture.organizationID, TargetUserID: fixture.targetID,
+		})
+		removeDone <- err
+	}()
+	waitForWriteAccessLockWaiter(t, ctx, pool)
+	if got := expense.checks.Load(); got != 1 {
+		t.Fatalf("approver checks before releasing in-flight write = %d, want only preflight check", got)
+	}
+	close(leaseReleased)
+	if err := receiveWriteAccessError(t, ctx, leaseDone); err != nil {
+		t.Fatalf("release write lease: %v", err)
+	}
+	var domainErr *identityservice.Error
+	if err := receiveWriteAccessError(t, ctx, removeDone); !errors.As(err, &domainErr) || domainErr.Code != "APPROVER_STILL_ASSIGNED" {
+		t.Fatalf("remove after late approver assignment error = %v, want APPROVER_STILL_ASSIGNED", err)
+	}
+	if got := expense.checks.Load(); got != 2 {
+		t.Fatalf("approver checks = %d, want preflight + locked recheck", got)
+	}
+	var removed bool
+	if err := pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM organization_members WHERE organization_id = $1 AND user_id = $2`, fixture.organizationID, fixture.targetID).Scan(&removed); err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("member removal committed despite an approver rule found under the organization lock")
+	}
+}
+
+func TestMemberRemovalRetriesAfterCrossServiceReassignmentCommit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool := newWriteAccessIntegrationPool(t, ctx)
+	store := repository.NewStore(pool)
+	log := slog.New(slog.DiscardHandler)
+	fixture := createWriteAccessFixture(t, ctx, pool)
+	expense := &mutableApproverAssignments{assignedToTarget: true}
+	members := organizationmember.NewOrganizationMemberService(store, noopRevocationWriter{}, expense, log)
+	if _, err := pool.Exec(ctx, `
+		CREATE FUNCTION reject_member_removal_event() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.event_type = 'organization.member.removed' AND NEW.topic = 'audit' THEN
+				RAISE EXCEPTION 'forced removal outbox failure';
+			END IF;
+			RETURN NEW;
+		END $$;
+		CREATE TRIGGER reject_member_removal_event BEFORE INSERT ON outbox_events
+		FOR EACH ROW EXECUTE FUNCTION reject_member_removal_event();
+	`); err != nil {
+		t.Fatalf("install removal outbox failure: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS reject_member_removal_event ON outbox_events`)
+		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS reject_member_removal_event()`)
+	}()
+	replacement := fixture.ownerID
+	input := organizationmember.RemoveOrganizationMemberInput{
+		UserID: fixture.ownerID, OrganizationID: fixture.organizationID, TargetUserID: fixture.targetID,
+		ReassignRulesTo: &replacement,
+	}
+	if _, err := members.RemoveOrganizationMember(ctx, input); err == nil {
+		t.Fatal("first removal succeeded despite the forced Identity outbox failure")
+	}
+	if expense.isAssignedToTarget() {
+		t.Fatal("Expense reassignment did not commit before the forced Identity failure")
+	}
+	var removed bool
+	if err := pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM organization_members WHERE organization_id = $1 AND user_id = $2`, fixture.organizationID, fixture.targetID).Scan(&removed); err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("Identity removal was not rolled back with its outbox failure")
+	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER reject_member_removal_event ON outbox_events; DROP FUNCTION reject_member_removal_event()`); err != nil {
+		t.Fatalf("remove forced failure: %v", err)
+	}
+	if _, err := members.RemoveOrganizationMember(ctx, input); err != nil {
+		t.Fatalf("retry removal after committed reassignment: %v", err)
+	}
+	if got := expense.reassignCalls(); got != 1 {
+		t.Fatalf("Expense reassignment calls = %d, want exactly one across retry", got)
+	}
+	if err := pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM organization_members WHERE organization_id = $1 AND user_id = $2`, fixture.organizationID, fixture.targetID).Scan(&removed); err != nil || !removed {
+		t.Fatalf("membership removed = %t, error = %v; want true", removed, err)
+	}
+}
+
+type lateApproverAssignments struct{ checks atomic.Int32 }
+
+func (f *lateApproverAssignments) CheckApproverAssignments(context.Context, uuid.UUID, uuid.UUID) (bool, []contract.ApproverRuleRef, error) {
+	if f.checks.Add(1) == 1 {
+		return false, nil, nil
+	}
+	return true, []contract.ApproverRuleRef{{ID: uuid.New(), Step: 1}}, nil
+}
+
+func (*lateApproverAssignments) ReassignApproverRules(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+
+func (*lateApproverAssignments) ClearRejoinedMemberProjectAccess(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (int64, error) {
+	return 0, nil
+}
+
+type mutableApproverAssignments struct {
+	mu               sync.Mutex
+	assignedToTarget bool
+	reassignCount    int
+}
+
+func (f *mutableApproverAssignments) CheckApproverAssignments(context.Context, uuid.UUID, uuid.UUID) (bool, []contract.ApproverRuleRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.assignedToTarget {
+		return false, nil, nil
+	}
+	return true, []contract.ApproverRuleRef{{ID: uuid.New(), Step: 1}}, nil
+}
+
+func (f *mutableApproverAssignments) ReassignApproverRules(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.assignedToTarget = false
+	f.reassignCount++
+	return nil
+}
+
+func (*mutableApproverAssignments) ClearRejoinedMemberProjectAccess(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (int64, error) {
+	return 0, nil
+}
+
+func (f *mutableApproverAssignments) isAssignedToTarget() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.assignedToTarget
+}
+
+func (f *mutableApproverAssignments) reassignCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reassignCount
 }
 
 type writeAccessFixture struct {
@@ -310,4 +486,8 @@ func (noApproverRules) CheckApproverAssignments(context.Context, uuid.UUID, uuid
 
 func (noApproverRules) ReassignApproverRules(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID) error {
 	return nil
+}
+
+func (noApproverRules) ClearRejoinedMemberProjectAccess(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (int64, error) {
+	return 0, nil
 }

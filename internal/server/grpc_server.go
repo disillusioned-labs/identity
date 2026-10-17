@@ -38,12 +38,43 @@ func NewGRPC(cfg *config.Config, log *slog.Logger, deps Deps) (*GRPCServer, erro
 		platformgrpc.WithStreamServerInterceptor(
 			platformgrpc.StreamRequestIDServer(log),
 		),
-
-		// Authentication interceptor — wire here when ready.
-		//
-		// platformgrpc.WithUnaryServerInterceptor(
-		//     authkit.GRPCUnaryInterceptor(deps.Verifier),
-		// ),
+	}
+	if cfg.Service.Env != "development" || cfg.GRPCAuth.ExpenseServiceTokens != "" || cfg.GRPCAuth.NotificationServiceTokens != "" {
+		tokensByCaller := make(map[string][]string, 2)
+		callersByMethod := make(map[string][]string)
+		if cfg.GRPCAuth.ExpenseServiceTokens != "" {
+			expenseTokens, err := platformgrpc.ParseServiceTokens(cfg.GRPCAuth.ExpenseServiceTokens)
+			if err != nil {
+				return nil, fmt.Errorf("parse expense gRPC service tokens: %w", err)
+			}
+			tokensByCaller["expense"] = expenseTokens
+			for _, method := range []string{
+				identitypb.IdentityService_IsMemberActive_FullMethodName,
+				identitypb.IdentityService_GetMemberRole_FullMethodName,
+				identitypb.IdentityService_GetUsersInfo_FullMethodName,
+				identitypb.IdentityService_GetOrgStatus_FullMethodName,
+				identitypb.IdentityService_IsServiceAccessAllowed_FullMethodName,
+				identitypb.IdentityService_HoldExpenseWriteAccess_FullMethodName,
+			} {
+				callersByMethod[method] = []string{"expense"}
+			}
+		}
+		if cfg.GRPCAuth.NotificationServiceTokens != "" {
+			notificationTokens, err := platformgrpc.ParseServiceTokens(cfg.GRPCAuth.NotificationServiceTokens)
+			if err != nil {
+				return nil, fmt.Errorf("parse notification gRPC service tokens: %w", err)
+			}
+			tokensByCaller["notification"] = notificationTokens
+			callersByMethod[identitypb.IdentityService_GetDeviceTokens_FullMethodName] = []string{"notification"}
+		}
+		unaryAuth, streamAuth, err := platformgrpc.NewServiceAuthInterceptors(tokensByCaller, callersByMethod)
+		if err != nil {
+			return nil, fmt.Errorf("configure identity gRPC service auth: %w", err)
+		}
+		opts = append(opts,
+			platformgrpc.WithUnaryServerInterceptor(unaryAuth),
+			platformgrpc.WithStreamServerInterceptor(streamAuth),
+		)
 	}
 	if cfg.GRPC.TLS.Enabled {
 		tlsConfig, err := platformgrpc.NewTLSConfig(

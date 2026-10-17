@@ -27,4 +27,7 @@ type ExpenseClient interface {
 	// ReassignApproverRules moves every live rule of fromUserID to
 	// toUserID, recording actorID as the deciding admin in the audit event.
 	ReassignApproverRules(ctx context.Context, orgID, fromUserID, toUserID, actorID uuid.UUID) error
+	// ClearRejoinedMemberProjectAccess removes old project placements before a
+	// previously removed member is reactivated in the organization.
+	ClearRejoinedMemberProjectAccess(ctx context.Context, orgID, userID, actorID uuid.UUID) (int64, error)
 }
